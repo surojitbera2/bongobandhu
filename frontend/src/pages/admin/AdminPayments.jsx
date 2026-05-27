@@ -6,14 +6,14 @@ import { Check, X, Save, Clock, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 const DEFAULT_PACKAGES = [
-  { minutes: 5, price: 300 },
-  { minutes: 10, price: 400 },
-  { minutes: 15, price: 500 },
+  { minutes: 5, price: 300, providerRate: 200 },
+  { minutes: 10, price: 400, providerRate: 250 },
+  { minutes: 15, price: 500, providerRate: 300 },
 ];
 
 export default function AdminPayments() {
   const [settings, setSettings] = useState({ upi_id: "", qr_url: "" });
-  const [billing, setBilling] = useState({ packages: DEFAULT_PACKAGES, providerSharePct: 60 });
+  const [billing, setBilling] = useState({ packages: DEFAULT_PACKAGES });
   const [whatsapp, setWhatsapp] = useState({ whatsappNumber: "" });
   const [upi, setUpi] = useState({ upiId: "", upiName: "Bongo Bandhu", qrCodeUrl: "" });
   const [requests, setRequests] = useState([]);
@@ -32,8 +32,11 @@ export default function AdminPayments() {
       setSettings(s);
       const pkgs = Array.isArray(b?.packages) && b.packages.length ? b.packages : DEFAULT_PACKAGES;
       setBilling({
-        packages: pkgs.map((p) => ({ minutes: Number(p.minutes) || 0, price: Number(p.price) || 0 })),
-        providerSharePct: Number(b?.providerSharePct ?? 60),
+        packages: pkgs.map((p) => ({
+          minutes: Number(p.minutes) || 0,
+          price: Number(p.price) || 0,
+          providerRate: p.providerRate != null ? Number(p.providerRate) : Math.round((Number(p.price) || 0) * 0.6),
+        })),
       });
       setWhatsapp(w || { whatsappNumber: "" });
       setUpi(u || { upiId: "", upiName: "Bongo Bandhu", qrCodeUrl: "" });
@@ -51,10 +54,22 @@ export default function AdminPayments() {
   const saveBilling = async () => {
     // Validate packages
     const pkgs = (billing.packages || [])
-      .map((p) => ({ minutes: Math.max(1, Math.round(Number(p.minutes) || 0)), price: Math.max(0, Math.round(Number(p.price) || 0)) }))
+      .map((p) => ({
+        minutes: Math.max(1, Math.round(Number(p.minutes) || 0)),
+        price: Math.max(0, Math.round(Number(p.price) || 0)),
+        providerRate: Math.max(0, Math.round(Number(p.providerRate) || 0)),
+      }))
       .filter((p) => p.minutes > 0)
       .sort((a, b) => a.minutes - b.minutes);
     if (pkgs.length === 0) return toast.error("Add at least one package");
+    // Validate: providerRate <= price for each
+    for (const p of pkgs) {
+      if (p.providerRate > p.price) {
+        return toast.error(`${p.minutes}-min: provider rate (₹${p.providerRate}) cannot exceed price (₹${p.price})`);
+      }
+      if (p.price <= 0) return toast.error(`${p.minutes}-min: price must be greater than 0`);
+      if (p.providerRate <= 0) return toast.error(`${p.minutes}-min: provider rate must be greater than 0`);
+    }
     // ensure unique minutes
     const seen = new Set();
     for (const p of pkgs) {
@@ -63,7 +78,7 @@ export default function AdminPayments() {
     }
     setBusy((b) => ({ ...b, billing: true }));
     try {
-      await api.adminSaveBilling({ packages: pkgs, providerSharePct: Number(billing.providerSharePct) || 0 });
+      await api.adminSaveBilling({ packages: pkgs });
       toast.success("Billing saved");
       await refresh();
     } catch (e) { toast.error(e.message); }
@@ -76,7 +91,7 @@ export default function AdminPayments() {
       return { ...b, packages: arr };
     });
   };
-  const addPkg = () => setBilling((b) => ({ ...b, packages: [...(b.packages || []), { minutes: 0, price: 0 }] }));
+  const addPkg = () => setBilling((b) => ({ ...b, packages: [...(b.packages || []), { minutes: 0, price: 0, providerRate: 0 }] }));
   const delPkg = (i) => setBilling((b) => ({ ...b, packages: (b.packages || []).filter((_, idx) => idx !== i) }));
 
   const saveWhatsapp = async () => {
@@ -134,47 +149,75 @@ export default function AdminPayments() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="font-heading text-sm font-semibold tracking-wide uppercase text-[#94A3B8]">Call packages (fixed-time)</h3>
-            <p className="text-[11px] text-[#94A3B8] mt-1">Charged based on call duration. Example: a call ending at 5 min 30 sec is billed at the next-higher tier.</p>
+            <p className="text-[11px] text-[#94A3B8] mt-1">Set user price and provider earning rate per package. Admin commission = price − provider rate.</p>
           </div>
         </div>
         <div className="space-y-2">
-          {(billing.packages || []).map((pk, i) => (
-            <div key={i} className="grid grid-cols-12 gap-2 items-end">
-              <div className="col-span-5 sm:col-span-4">
-                <Label>Duration (minutes)</Label>
-                <div className="relative">
-                  <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#64748B]" />
+          {/* Header row */}
+          <div className="hidden sm:grid grid-cols-12 gap-2 text-[10px] uppercase tracking-wider text-[#64748B] font-semibold px-1 pb-1">
+            <div className="col-span-3">Duration (min)</div>
+            <div className="col-span-3">User pays (₹)</div>
+            <div className="col-span-3">Provider earns (₹)</div>
+            <div className="col-span-2">Admin gets</div>
+            <div className="col-span-1"></div>
+          </div>
+          {(billing.packages || []).map((pk, i) => {
+            const adminShare = Math.max(0, (Number(pk.price) || 0) - (Number(pk.providerRate) || 0));
+            const invalid = Number(pk.providerRate) > Number(pk.price);
+            return (
+              <div key={i} className="grid grid-cols-12 gap-2 items-end">
+                <div className="col-span-12 sm:col-span-3">
+                  <label className="text-xs tracking-[0.08em] uppercase text-[#94A3B8] font-medium mb-2 block sm:hidden">Duration (min)</label>
+                  <div className="relative">
+                    <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#64748B]" />
+                    <Input
+                      data-testid={`pkg-min-${i}`}
+                      type="number" min={1}
+                      value={pk.minutes}
+                      onChange={(e) => updatePkg(i, "minutes", e.target.value)}
+                      className="pl-9"
+                    />
+                  </div>
+                </div>
+                <div className="col-span-6 sm:col-span-3">
+                  <label className="text-xs tracking-[0.08em] uppercase text-[#94A3B8] font-medium mb-2 block sm:hidden">User pays (₹)</label>
                   <Input
-                    data-testid={`pkg-min-${i}`}
+                    data-testid={`pkg-price-${i}`}
                     type="number" min={1}
-                    value={pk.minutes}
-                    onChange={(e) => updatePkg(i, "minutes", e.target.value)}
-                    className="pl-9"
+                    value={pk.price}
+                    onChange={(e) => updatePkg(i, "price", e.target.value)}
                   />
                 </div>
+                <div className="col-span-6 sm:col-span-3">
+                  <label className="text-xs tracking-[0.08em] uppercase text-[#94A3B8] font-medium mb-2 block sm:hidden">Provider earns (₹)</label>
+                  <Input
+                    data-testid={`pkg-prate-${i}`}
+                    type="number" min={1}
+                    value={pk.providerRate ?? ""}
+                    onChange={(e) => updatePkg(i, "providerRate", e.target.value)}
+                    className={invalid ? "border-[#EF4444]" : ""}
+                  />
+                </div>
+                <div className="col-span-9 sm:col-span-2">
+                  <label className="text-xs tracking-[0.08em] uppercase text-[#94A3B8] font-medium mb-2 block sm:hidden">Admin gets</label>
+                  <div className={`px-3 py-2.5 rounded-lg border text-sm tabular-nums ${invalid ? "border-[#EF4444]/40 text-[#EF4444] bg-[#EF4444]/5" : "border-white/10 text-[#10B981] bg-[#10B981]/5"}`} data-testid={`pkg-admin-${i}`}>
+                    ₹{adminShare}
+                  </div>
+                </div>
+                <div className="col-span-3 sm:col-span-1 flex justify-end">
+                  <button
+                    type="button"
+                    data-testid={`pkg-del-${i}`}
+                    onClick={() => delPkg(i)}
+                    className="p-2.5 rounded-lg text-[#EF4444] hover:bg-[#EF4444]/10 border border-transparent hover:border-[#EF4444]/20"
+                    title="Remove package"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-              <div className="col-span-5 sm:col-span-6">
-                <Label>Price (₹)</Label>
-                <Input
-                  data-testid={`pkg-price-${i}`}
-                  type="number" min={0}
-                  value={pk.price}
-                  onChange={(e) => updatePkg(i, "price", e.target.value)}
-                />
-              </div>
-              <div className="col-span-2 sm:col-span-2 flex justify-end">
-                <button
-                  type="button"
-                  data-testid={`pkg-del-${i}`}
-                  onClick={() => delPkg(i)}
-                  className="p-2.5 rounded-lg text-[#EF4444] hover:bg-[#EF4444]/10 border border-transparent hover:border-[#EF4444]/20"
-                  title="Remove package"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <div className="mt-3 flex flex-wrap gap-3">
           <button
@@ -185,14 +228,6 @@ export default function AdminPayments() {
           >
             <Plus className="w-3.5 h-3.5" /> Add package
           </button>
-        </div>
-
-        <div className="mt-6 grid md:grid-cols-2 gap-4">
-          <div>
-            <Label>Provider share %</Label>
-            <Input data-testid="billing-share" type="number" min={0} max={100} value={billing.providerSharePct} onChange={(e) => setBilling({ ...billing, providerSharePct: Number(e.target.value) })} />
-            <p className="text-[11px] text-[#94A3B8] mt-1">Admin commission = 100 − this %. Currently <span className="text-white font-medium">{billing.providerSharePct}% provider · {100 - billing.providerSharePct}% admin</span>.</p>
-          </div>
         </div>
 
         <button data-testid="save-billing" disabled={busy.billing} onClick={saveBilling} className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-[#9333EA] text-white font-semibold rounded-xl hover:bg-[#7C3AED] disabled:opacity-50">

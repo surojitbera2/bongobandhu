@@ -356,12 +356,57 @@ app.post("/api/provider/login", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/admin/login", (req, res) => {
-  const { username, password } = req.body || {};
-  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-    return res.json({ token: sign({ role: "admin" }) });
-  }
-  res.status(401).json({ error: "invalid credentials" });
+app.post("/api/admin/login", async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || !password) return res.status(400).json({ error: "username and password required" });
+
+    // Check DB-stored admin credentials first; fallback to env vars for initial login.
+    const stored = await Settings.findOne({ key: "adminCredentials" });
+    const dbUsername = stored?.value?.username;
+    const dbPasswordHash = stored?.value?.passwordHash;
+
+    let ok = false;
+    if (dbUsername && dbPasswordHash) {
+      ok = username === dbUsername && await bcrypt.compare(password, dbPasswordHash);
+    } else {
+      // Fallback: env-var credentials (used before admin changes password the first time)
+      ok = username === ADMIN_USERNAME && password === ADMIN_PASSWORD;
+    }
+
+    if (!ok) return res.status(401).json({ error: "invalid credentials" });
+    res.json({ token: sign({ role: "admin" }) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin — change own password
+app.post("/api/admin/change-password", auth("admin"), async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) return res.status(400).json({ error: "currentPassword and newPassword required" });
+    if (String(newPassword).length < 6) return res.status(400).json({ error: "new password must be at least 6 characters" });
+
+    // Verify current password (against DB or env fallback)
+    const stored = await Settings.findOne({ key: "adminCredentials" });
+    const dbUsername = stored?.value?.username;
+    const dbPasswordHash = stored?.value?.passwordHash;
+
+    let currentOk = false;
+    if (dbUsername && dbPasswordHash) {
+      currentOk = await bcrypt.compare(currentPassword, dbPasswordHash);
+    } else {
+      currentOk = currentPassword === ADMIN_PASSWORD;
+    }
+    if (!currentOk) return res.status(401).json({ error: "current password is incorrect" });
+
+    const hash = await bcrypt.hash(String(newPassword), 10);
+    await Settings.findOneAndUpdate(
+      { key: "adminCredentials" },
+      { value: { username: dbUsername || ADMIN_USERNAME, passwordHash: hash } },
+      { upsert: true, new: true }
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Public catalog — only active (approved) providers visible to users.
@@ -411,32 +456,52 @@ app.post("/api/recharge", auth("user"), async (req, res) => {
 });
 
 // ----- Helpers for package billing -----
+// Each package: { minutes, price, providerRate }
+//   - price = what user pays
+//   - providerRate = what provider earns (admin commission = price - providerRate)
 const DEFAULT_PACKAGES = [
-  { minutes: 5, price: 300 },
-  { minutes: 10, price: 400 },
-  { minutes: 15, price: 500 },
+  { minutes: 5, price: 300, providerRate: 200 },
+  { minutes: 10, price: 400, providerRate: 250 },
+  { minutes: 15, price: 500, providerRate: 300 },
 ];
 const GRACE_SEC = 10; // calls shorter than this are not charged (accidental connects)
 
 const normalizePackages = (raw) => {
   if (!Array.isArray(raw) || raw.length === 0) return DEFAULT_PACKAGES;
   const cleaned = raw
-    .map((p) => ({
-      minutes: Math.max(1, Math.round(Number(p?.minutes) || 0)),
-      price: Math.max(0, Math.round(Number(p?.price) || 0)),
-    }))
+    .map((p) => {
+      const minutes = Math.max(1, Math.round(Number(p?.minutes) || 0));
+      const price = Math.max(0, Math.round(Number(p?.price) || 0));
+      // providerRate: if missing, default to 60% of price (back-compat with old data)
+      const providerRateRaw = p?.providerRate;
+      const providerRate = providerRateRaw == null
+        ? Math.round(price * 0.6)
+        : Math.max(0, Math.min(price, Math.round(Number(providerRateRaw) || 0)));
+      return { minutes, price, providerRate };
+    })
     .filter((p) => p.minutes > 0 && p.price >= 0)
     .sort((a, b) => a.minutes - b.minutes);
   return cleaned.length ? cleaned : DEFAULT_PACKAGES;
 };
 
-const computeCallAmount = (durationSec, packages) => {
-  if (!durationSec || durationSec <= 0) return 0;
-  if (durationSec < GRACE_SEC) return 0;
+// Returns the matched package for the given duration (price + providerRate)
+const matchPackage = (durationSec, packages) => {
   const sorted = normalizePackages(packages);
+  if (!durationSec || durationSec <= 0) return null;
+  if (durationSec < GRACE_SEC) return null;
   const mins = durationSec / 60;
-  for (const p of sorted) if (mins <= p.minutes) return p.price;
-  return sorted[sorted.length - 1].price;
+  for (const p of sorted) if (mins <= p.minutes) return p;
+  return sorted[sorted.length - 1];
+};
+
+const computeCallAmount = (durationSec, packages) => {
+  const pk = matchPackage(durationSec, packages);
+  return pk ? pk.price : 0;
+};
+
+const computeProviderRate = (durationSec, packages) => {
+  const pk = matchPackage(durationSec, packages);
+  return pk ? pk.providerRate : 0;
 };
 
 // In-flight promise map — ensures concurrent requests for the same user+provider
@@ -476,17 +541,27 @@ app.post("/api/call/log", auth("user"), async (req, res) => {
     if (recent) return recent;
 
     const billing = await Settings.findOne({ key: "billing" });
-    const sharePct = Number(billing?.value?.providerSharePct ?? 60);
     const packages = normalizePackages(billing?.value?.packages);
 
-    // Server is the source of truth for the amount — recompute from tier.
-    const amount = computeCallAmount(Number(durationSec) || 0, packages);
+    // Server is the source of truth for the amount AND the provider rate.
+    // Match the package tier from duration, then use its fixed price + providerRate.
+    const matched = matchPackage(Number(durationSec) || 0, packages);
+    const amount = matched ? matched.price : 0;
+    const providerRate = matched ? matched.providerRate : 0;
 
     const u = await User.findById(req.user.id).select("bonusBalance");
     const currentBonus = Math.max(0, Number(u?.bonusBalance || 0));
     const bonusUsed = Math.min(amount, currentBonus);
     const realUsed = Math.max(0, amount - bonusUsed);
-    const providerCredit = Math.round((realUsed * sharePct) / 100 * 100) / 100;
+
+    // Provider credit: scale the fixed rate by the realUsed/amount ratio so bonus calls
+    // don't earn revenue. (If amount=0, no credit.)
+    const providerCredit = amount > 0
+      ? Math.round((providerRate * realUsed / amount) * 100) / 100
+      : 0;
+
+    // sharePct (kept for backward compat in CallLog schema) = effective percentage
+    const sharePct = amount > 0 ? Math.round((providerRate / amount) * 100) : 0;
 
     const log = await CallLog.create({
       userId: req.user.id, providerId, durationSec, amount,

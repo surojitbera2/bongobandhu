@@ -105,6 +105,7 @@ export const api = {
   adminSavePayments: (data) => unwrap(http.put("/api/admin/payments/settings", data)),
   adminGetBilling: () => unwrap(http.get("/api/admin/billing")),
   adminSaveBilling: (data) => unwrap(http.put("/api/admin/billing", data)),
+  adminChangePassword: (currentPassword, newPassword) => unwrap(http.post("/api/admin/change-password", { currentPassword, newPassword })),
   adminGetWhatsapp: () => unwrap(http.get("/api/admin/whatsapp")),
   adminSaveWhatsapp: (data) => unwrap(http.put("/api/admin/whatsapp", data)),
   adminGetUpi: () => unwrap(http.get("/api/admin/upi")),

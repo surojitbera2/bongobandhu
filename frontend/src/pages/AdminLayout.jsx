@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate, NavLink, Routes, Route, useLocation } from "react-router-dom";
-import { Users, UserCog, CreditCard, BarChart3, LogOut, Video, Menu, ChevronDown, Wallet, Languages } from "lucide-react";
+import { Users, UserCog, CreditCard, BarChart3, LogOut, Video, Menu, ChevronDown, Wallet, Languages, Settings as SettingsIcon } from "lucide-react";
 import { getSession, clearSession } from "../lib/auth";
 import { Toaster } from "sonner";
 import AdminUsers from "./admin/AdminUsers";
@@ -9,6 +9,7 @@ import AdminPayments from "./admin/AdminPayments";
 import AdminPayouts from "./admin/AdminPayouts";
 import AdminLanguages from "./admin/AdminLanguages";
 import AdminReports from "./admin/AdminReports";
+import AdminSettings from "./admin/AdminSettings";
 
 const links = [
   { to: "/admin/reports", label: "Overview", icon: BarChart3 },
@@ -17,6 +18,7 @@ const links = [
   { to: "/admin/payouts", label: "Payouts", icon: Wallet },
   { to: "/admin/languages", label: "Languages", icon: Languages },
   { to: "/admin/payments", label: "Payments", icon: CreditCard },
+  { to: "/admin/settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export default function AdminLayout() {
@@ -176,6 +178,7 @@ export default function AdminLayout() {
               <Route path="payouts" element={<AdminPayouts />} />
               <Route path="languages" element={<AdminLanguages />} />
               <Route path="payments" element={<AdminPayments />} />
+              <Route path="settings" element={<AdminSettings />} />
             </Routes>
           </div>
         </main>
