@@ -9,7 +9,9 @@ const root = ReactDOM.createRoot(document.getElementById("root"));
 // half-open socket and getting dropped). Production behaviour is unaffected.
 root.render(<App />);
 
-if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
+// Register Service Worker in production (Web Push + offline cache).
+// Also register in development for testing push notifications via WebView/devices.
+if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   });

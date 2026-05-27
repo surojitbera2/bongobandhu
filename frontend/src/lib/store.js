@@ -36,6 +36,7 @@ export const api = {
   pushVapidKey: () => unwrap(http.get("/api/push/vapid-public-key")),
   pushSubscribe: (subscription) => unwrap(http.post("/api/push/subscribe", { subscription, userAgent: navigator.userAgent })),
   pushUnsubscribe: (endpoint) => unwrap(http.post("/api/push/unsubscribe", { endpoint })),
+  pushTest: () => unwrap(http.post("/api/push/test")),
 
   // ----- provider self -----
   providerUpdateProfile: (patch) => unwrap(http.patch("/api/provider/me", patch)),

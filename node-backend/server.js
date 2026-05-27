@@ -799,6 +799,35 @@ app.post("/api/push/unsubscribe", auth("provider"), async (req, res) => {
   res.json({ ok: true });
 });
 
+// Provider — send a test push to verify notification setup.
+app.post("/api/push/test", auth("provider"), async (req, res) => {
+  try {
+    const subs = await PushSub.find({ ownerId: req.user.id });
+    if (!subs.length) return res.status(404).json({ error: "no push subscriptions — enable notifications first" });
+    let delivered = 0;
+    await Promise.all(subs.map(async (s) => {
+      try {
+        await webpush.sendNotification(
+          { endpoint: s.endpoint, keys: s.keys },
+          JSON.stringify({
+            type: "incoming_call",
+            title: "📞 Test incoming call",
+            body: "This is a test notification. Real calls will look like this.",
+            tag: "test-call",
+          }),
+          { TTL: 60 }
+        );
+        delivered++;
+      } catch (e) {
+        if (e.statusCode === 404 || e.statusCode === 410) {
+          await PushSub.deleteOne({ _id: s._id });
+        }
+      }
+    }));
+    res.json({ ok: true, delivered, total: subs.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Helper: send a push to all subscriptions of a given owner. Removes stale ones (404/410).
 const pushToOwner = async (ownerId, payload) => {
   const subs = await PushSub.find({ ownerId });
@@ -1451,17 +1480,18 @@ io.on("connection", (socket) => {
       from,
     });
 
-    // PUSH NOTIFICATION
-    if (!sockets.get(to)) {
-      pushToOwner(to, {
-        type: "incoming_call",
-        title: "Incoming call · Navya",
-        body: `${msg.fromName || "Someone"} wants to talk`,
-        callerId: from,
-        callerName: msg.fromName || "User",
-        tag: `call-${from}`,
-      }).catch(() => {});
-    }
+    // PUSH NOTIFICATION — always fire so WebView/minimized apps receive
+    // an OS-level alert with sound + vibration, regardless of socket state.
+    // The service worker also messages any open clients to start the in-app
+    // ringtone, so foreground tabs get the audio cue immediately.
+    pushToOwner(to, {
+      type: "incoming_call",
+      title: "📞 Incoming call · Bongo Bandhu",
+      body: `${msg.fromName || "Someone"} is calling you`,
+      callerId: from,
+      callerName: msg.fromName || "User",
+      tag: `call-${from}`,
+    }).catch(() => {});
   });
 
   // CALL ACCEPT

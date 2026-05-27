@@ -39,7 +39,7 @@ export default function ProviderHome() {
         }
         ringtone.start();
         if (document.hidden) {
-          notify.show("Incoming call · Bongo Bandhu", `${m.fromName || "Caller"} wants to talk`, {
+          notify.show("📞 Incoming call · Bongo Bandhu", `${m.fromName || "Caller"} is calling you`, {
             tag: "incoming-call",
             requireInteraction: true,
             onClick: () => {},
@@ -49,9 +49,42 @@ export default function ProviderHome() {
       });
     });
 
-    return () => { offReq(); ringtone.stop(); };
+    // Listen for Service Worker messages so push notifications can:
+    //  - start the in-app ringtone even if the foreground tab missed the socket event
+    //  - stop ringtone when user dismisses the notification
+    //  - focus the call when user taps the notification
+    const onSwMessage = (event) => {
+      const m = event.data || {};
+      if (m.type === "incoming-call-push" && onlineRef.current) {
+        ringtone.start();
+      } else if (m.type === "notification-dismiss") {
+        ringtone.stop();
+      } else if (m.type === "notification-click") {
+        // App was already open — refocus, the incoming dialog should already show
+      }
+    };
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener("message", onSwMessage);
+    }
+
+    return () => {
+      offReq();
+      ringtone.stop();
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.removeEventListener("message", onSwMessage);
+      }
+    };
     // eslint-disable-next-line
   }, []);
+
+  // When tab becomes visible again, ensure socket is reconnected (WebView throttling)
+  useEffect(() => {
+    const onVis = () => {
+      if (!document.hidden && me?.id) signaling.connect(me.id);
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [me]);
 
   // Auto-subscribe for web push so offline calls trigger phone alerts.
   useEffect(() => {
@@ -65,6 +98,10 @@ export default function ProviderHome() {
 
   const toggleOnline = async () => {
     if (!me.online) {
+      // Going online — request notification permission, subscribe to push, and
+      // warm up the ringtone so it can autoplay later (browser autoplay policy
+      // requires a user gesture to first interact with audio).
+      ringtone.warmUp();
       const p = await notify.requestPermission();
       setNotifPerm(p);
       // Also subscribe for Web Push so calls can wake the device while offline.
@@ -75,7 +112,7 @@ export default function ProviderHome() {
     try {
       const updated = await api.setProviderOnline(!me.online);
       setMe(updated); onlineRef.current = updated.online;
-      toast.success(updated.online ? "You're online" : "You're offline");
+      toast.success(updated.online ? "You're online — you'll get call alerts" : "You're offline");
     } catch (e) { toast.error(e.message); }
   };
 
@@ -149,11 +186,44 @@ export default function ProviderHome() {
         </div>
 
         {me.online && notifPerm !== "granted" && notifPerm !== "unsupported" && (
-          <button onClick={async () => setNotifPerm(await notify.requestPermission())} className="w-full flex items-center gap-3 p-3 rounded-xl bg-[#9333EA]/10 border border-[#9333EA]/20 text-left">
+          <button data-testid="enable-notif" onClick={async () => {
+            const p = await notify.requestPermission();
+            setNotifPerm(p);
+            if (p === "granted" && webPush.isSupported()) {
+              webPush.subscribe().then(() => toast.success("Notifications enabled")).catch((e) => toast.error(e.message));
+            }
+          }} className="w-full flex items-center gap-3 p-3 rounded-xl bg-[#9333EA]/10 border border-[#9333EA]/20 text-left">
             <BellRing className="w-4 h-4 text-[#9333EA] shrink-0" />
             <div className="flex-1">
               <p className="text-sm text-white font-medium">Enable call notifications</p>
-              <p className="text-[11px] text-[#94A3B8]">Get alerted when a user calls — even when this tab is in the background.</p>
+              <p className="text-[11px] text-[#94A3B8]">Get alerted with sound when a user calls — even when this app is minimized.</p>
+            </div>
+          </button>
+        )}
+
+        {me.online && notifPerm === "granted" && (
+          <button
+            data-testid="test-notif"
+            onClick={async () => {
+              try {
+                // Ensure subscription is fresh
+                if (webPush.isSupported()) {
+                  await webPush.subscribe().catch(() => {});
+                }
+                const r = await api.pushTest();
+                if (r.delivered > 0) {
+                  toast.success(`Test sent to ${r.delivered} device${r.delivered > 1 ? "s" : ""} — check your notifications`);
+                } else {
+                  toast.error("No active push subscriptions. Try re-enabling notifications.");
+                }
+              } catch (e) { toast.error(e.message); }
+            }}
+            className="w-full flex items-center gap-3 p-3 rounded-xl bg-[#10B981]/8 border border-[#10B981]/20 text-left hover:bg-[#10B981]/15 transition-colors"
+          >
+            <BellRing className="w-4 h-4 text-[#10B981] shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm text-white font-medium">Test notification</p>
+              <p className="text-[11px] text-[#94A3B8]">Send yourself a test alert to verify call notifications work.</p>
             </div>
           </button>
         )}
