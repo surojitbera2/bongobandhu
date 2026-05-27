@@ -439,47 +439,41 @@ const computeCallAmount = (durationSec, packages) => {
   return sorted[sorted.length - 1].price;
 };
 
-// In-memory locks to prevent concurrent duplicate call/log requests (dedupe window)
-const callLogLocks = new Map(); // key=`${userId}:${providerId}` -> timestamp
-const CALL_LOG_DEDUP_WINDOW_MS = 30 * 1000; // 30 seconds
+// In-flight promise map — ensures concurrent requests for the same user+provider
+// share the same promise, preventing duplicate call logs / double charging.
+// Node.js is single-threaded, so the synchronous check + set is atomic.
+const callLogInFlight = new Map(); // key=`${userId}:${providerId}` -> Promise<log>
+const CALL_LOG_DEDUP_WINDOW_MS = 60 * 1000; // 60 seconds dedup window
 
 app.post("/api/call/log", auth("user"), async (req, res) => {
   const { providerId, durationSec, autoCutoff } = req.body || {};
   if (!providerId || durationSec == null) return res.status(400).json({ error: "missing fields" });
 
   const lockKey = `${req.user.id}:${providerId}`;
-  const now = Date.now();
 
-  // Step 1: In-memory lock to block concurrent requests racing to the DB
-  const lastLockAt = callLogLocks.get(lockKey);
-  if (lastLockAt && (now - lastLockAt) < CALL_LOG_DEDUP_WINDOW_MS) {
-    // A request for this user+provider was processed recently — return the existing log
-    const existing = await CallLog.findOne({
-      userId: req.user.id,
-      providerId,
-      at: { $gte: new Date(now - CALL_LOG_DEDUP_WINDOW_MS) },
-    }).sort({ at: -1 });
-    if (existing) return res.json(existing);
-  }
-  callLogLocks.set(lockKey, now);
-  // Auto-clean old lock entries
-  if (callLogLocks.size > 500) {
-    for (const [k, t] of callLogLocks) {
-      if (now - t > CALL_LOG_DEDUP_WINDOW_MS) callLogLocks.delete(k);
+  // SYNCHRONOUS check: if another request for this exact key is in flight,
+  // await its result and return the same log (no double-charge).
+  if (callLogInFlight.has(lockKey)) {
+    try {
+      const existingLog = await callLogInFlight.get(lockKey);
+      return res.json(existingLog);
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
     }
   }
 
-  try {
-    // Step 2: DB-level dedupe check (covers cases where process restarted or scaled)
+  // Build the work promise. This runs the full charge + log logic.
+  const workPromise = (async () => {
+    const now = Date.now();
+
+    // DB-level dedup check (handles process restart / second request arriving
+    // after first finished + lock was cleared)
     const recent = await CallLog.findOne({
       userId: req.user.id,
       providerId,
       at: { $gte: new Date(now - CALL_LOG_DEDUP_WINDOW_MS) },
     }).sort({ at: -1 });
-    if (recent) {
-      // Already logged this exact call recently — do not charge again
-      return res.json(recent);
-    }
+    if (recent) return recent;
 
     const billing = await Settings.findOne({ key: "billing" });
     const sharePct = Number(billing?.value?.providerSharePct ?? 60);
@@ -510,9 +504,21 @@ app.post("/api/call/log", auth("user"), async (req, res) => {
         await Provider.updateOne({ _id: providerId }, { $inc: { earnings: providerCredit, daily: providerCredit } });
       }
     }
+    return log;
+  })();
+
+  // Register the in-flight promise BEFORE any await — this is atomic in JS.
+  callLogInFlight.set(lockKey, workPromise);
+
+  try {
+    const log = await workPromise;
     res.json(log);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  } finally {
+    // Keep the lock alive for the dedup window so late-arriving duplicates
+    // (e.g. browser retries) also return the same result without re-charging.
+    setTimeout(() => callLogInFlight.delete(lockKey), CALL_LOG_DEDUP_WINDOW_MS);
   }
 });
 

@@ -246,6 +246,8 @@ export default function CallScreen() {
     if (localStream.current) localStream.current.getTracks().forEach((t) => t.stop());
   };
 
+  const logSent = useRef(false);
+
   const endCall = (autoCutoff = false, fromRemote = false) => {
     if (endedRef.current) return;
     endedRef.current = true;
@@ -254,7 +256,8 @@ export default function CallScreen() {
     const p = providerRef.current;
     if (!fromRemote && p) signaling.send("call_end", p.id);
     cleanup();
-    if (p && secondsRef.current > 0) {
+    if (p && secondsRef.current > 0 && !logSent.current) {
+      logSent.current = true;
       // Server is source of truth; we also send durationSec so server recomputes amount.
       api.saveCallLog({ providerId: p.id, durationSec: secondsRef.current, autoCutoff }).catch(() => {});
     }
