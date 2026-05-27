@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Download, Calendar, Search, ChevronDown, ChevronUp, IndianRupee, Phone, Users, Clock, CheckCircle2, History, X } from "lucide-react";
+import { Download, Calendar, Search, ChevronDown, ChevronUp, IndianRupee, Phone, Users, Clock, CheckCircle2, History, X, Trash2, AlertCircle } from "lucide-react";
 import { api } from "../../lib/store";
 import { Input } from "../../components/MobileShell";
 import { inr, formatDuration } from "../../lib/format";
@@ -97,7 +97,17 @@ export default function AdminPayouts() {
   const openHistory = async (g) => {
     try {
       const list = await api.adminPayoutHistory(g.providerId);
-      setHistoryDlg({ providerName: g.providerName, list });
+      setHistoryDlg({ providerId: g.providerId, providerName: g.providerName, isDeleted: !!g.isDeleted, list });
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const clearProviderPayouts = async (providerId, providerName) => {
+    if (!window.confirm(`Clear ALL payout history and call logs for "${providerName}"? This cannot be undone.`)) return;
+    try {
+      const r = await api.adminClearProviderPayouts(providerId);
+      toast.success(`Cleared ${r.payoutsDeleted} payout(s) and ${r.callLogsDeleted} call log(s)`);
+      setHistoryDlg(null);
+      await load();
     } catch (e) { toast.error(e.message); }
   };
 
@@ -224,8 +234,15 @@ export default function AdminPayouts() {
                 <React.Fragment key={g.providerId}>
                   <tr className="border-t border-white/5 hover:bg-white/[0.02]">
                     <td className="px-4 py-3">
-                      <p className="text-white font-medium">{g.providerName}</p>
-                      <p className="text-[11px] text-[#94A3B8]">+91 {g.providerMobile}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-white font-medium">{g.providerName}</p>
+                        {g.isDeleted && (
+                          <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-[#EF4444]/10 text-[#EF4444] border border-[#EF4444]/20 font-semibold">
+                            <AlertCircle className="w-3 h-3" /> DELETED
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-[#94A3B8]">{g.providerMobile ? `+91 ${g.providerMobile}` : "Provider no longer exists"}</p>
                     </td>
                     <td className="px-4 py-3 text-right text-white">{g.calls}</td>
                     <td className="px-4 py-3 text-right text-[#94A3B8] tabular-nums">{formatDuration(g.durationSec)}</td>
@@ -237,15 +254,27 @@ export default function AdminPayouts() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
-                        <button
-                          data-testid={`payout-done-${g.providerId}`}
-                          onClick={() => openPayout(g)}
-                          disabled={g.pendingBalance <= 0 && g.payout <= 0}
-                          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-md bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/30 hover:bg-[#10B981]/20 disabled:opacity-30 disabled:cursor-not-allowed"
-                          title="Mark payout done"
-                        >
-                          <CheckCircle2 className="w-3 h-3" /> Payout done
-                        </button>
+                        {!g.isDeleted && (
+                          <button
+                            data-testid={`payout-done-${g.providerId}`}
+                            onClick={() => openPayout(g)}
+                            disabled={g.pendingBalance <= 0 && g.payout <= 0}
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-md bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/30 hover:bg-[#10B981]/20 disabled:opacity-30 disabled:cursor-not-allowed"
+                            title="Mark payout done"
+                          >
+                            <CheckCircle2 className="w-3 h-3" /> Payout done
+                          </button>
+                        )}
+                        {g.isDeleted && (
+                          <button
+                            data-testid={`clear-payouts-${g.providerId}`}
+                            onClick={() => clearProviderPayouts(g.providerId, g.providerName)}
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-md bg-[#EF4444]/10 text-[#EF4444] border border-[#EF4444]/30 hover:bg-[#EF4444]/20"
+                            title="Clear all payout history & call logs for this deleted provider"
+                          >
+                            <Trash2 className="w-3 h-3" /> Clear logs
+                          </button>
+                        )}
                         <button
                           data-testid={`payout-history-${g.providerId}`}
                           onClick={() => openHistory(g)}
@@ -354,11 +383,18 @@ export default function AdminPayouts() {
             <div className="flex items-start justify-between mb-4">
               <div>
                 <p className="text-[11px] uppercase tracking-wider text-[#9333EA] font-semibold">Payout history</p>
-                <h3 className="font-heading text-xl font-bold mt-1">{historyDlg.providerName}</h3>
+                <div className="flex items-center gap-2 mt-1">
+                  <h3 className="font-heading text-xl font-bold">{historyDlg.providerName}</h3>
+                  {historyDlg.isDeleted && (
+                    <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-[#EF4444]/10 text-[#EF4444] border border-[#EF4444]/20 font-semibold">
+                      <AlertCircle className="w-3 h-3" /> DELETED
+                    </span>
+                  )}
+                </div>
               </div>
               <button onClick={() => setHistoryDlg(null)} className="p-1.5 -mr-2 -mt-1 rounded-lg hover:bg-white/5 text-[#94A3B8]"><X className="w-4 h-4" /></button>
             </div>
-            <div className="overflow-y-auto -mx-2 px-2">
+            <div className="overflow-y-auto -mx-2 px-2 flex-1">
               {historyDlg.list.length === 0 ? (
                 <p className="text-sm text-[#94A3B8] py-8 text-center">No payouts recorded yet.</p>
               ) : (
@@ -383,6 +419,23 @@ export default function AdminPayouts() {
                 </div>
               )}
             </div>
+            {historyDlg.isDeleted && (
+              <div className="mt-4 pt-4 border-t border-white/10">
+                <div className="p-3 rounded-xl bg-[#EF4444]/5 border border-[#EF4444]/20 mb-3">
+                  <p className="text-[11px] text-[#EF4444] font-semibold flex items-center gap-1.5">
+                    <AlertCircle className="w-3 h-3" /> Provider deleted
+                  </p>
+                  <p className="text-[11px] text-[#94A3B8] mt-1">This provider has been removed. You can clear all their payout history and call logs.</p>
+                </div>
+                <button
+                  data-testid="history-clear-payouts"
+                  onClick={() => clearProviderPayouts(historyDlg.providerId, historyDlg.providerName)}
+                  className="w-full py-2.5 rounded-xl bg-[#EF4444] hover:bg-[#DC2626] text-white text-sm font-bold inline-flex items-center justify-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" /> Clear all payouts & call logs
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

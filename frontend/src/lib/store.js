@@ -81,6 +81,7 @@ export const api = {
   // ----- admin -----
   adminGetUsers: () => unwrap(http.get("/api/admin/users")),
   adminAddUser: (data) => unwrap(http.post("/api/admin/users", data)),
+  adminUpdateUser: (id, patch) => unwrap(http.patch(`/api/admin/users/${id}`, patch)),
   adminDeleteUser: (id) => unwrap(http.delete(`/api/admin/users/${id}`)),
   adminAdjustUser: (id, delta, note) => unwrap(http.post(`/api/admin/users/${id}/adjust`, { delta, note })),
 
@@ -96,6 +97,7 @@ export const api = {
   adminGetPayouts: (params = {}) => unwrap(http.get("/api/admin/payouts", { params })),
   adminMarkPayoutDone: (data) => unwrap(http.post("/api/admin/payouts/mark-done", data)),
   adminPayoutHistory: (providerId) => unwrap(http.get("/api/admin/payouts/history", { params: providerId ? { providerId } : {} })),
+  adminClearProviderPayouts: (providerId) => unwrap(http.delete(`/api/admin/payouts/clear/${providerId}`)),
   adminPayoutsCsvUrl: (params = {}) => {
     const qs = new URLSearchParams({ ...params, format: "csv" }).toString();
     return `${BACKEND}/api/admin/payouts?${qs}`;

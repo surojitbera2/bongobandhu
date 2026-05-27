@@ -439,39 +439,81 @@ const computeCallAmount = (durationSec, packages) => {
   return sorted[sorted.length - 1].price;
 };
 
+// In-memory locks to prevent concurrent duplicate call/log requests (dedupe window)
+const callLogLocks = new Map(); // key=`${userId}:${providerId}` -> timestamp
+const CALL_LOG_DEDUP_WINDOW_MS = 30 * 1000; // 30 seconds
+
 app.post("/api/call/log", auth("user"), async (req, res) => {
   const { providerId, durationSec, autoCutoff } = req.body || {};
   if (!providerId || durationSec == null) return res.status(400).json({ error: "missing fields" });
-  const billing = await Settings.findOne({ key: "billing" });
-  const sharePct = Number(billing?.value?.providerSharePct ?? 60);
-  const packages = normalizePackages(billing?.value?.packages);
 
-  // Server is the source of truth for the amount — recompute from tier.
-  const amount = computeCallAmount(Number(durationSec) || 0, packages);
+  const lockKey = `${req.user.id}:${providerId}`;
+  const now = Date.now();
 
-  const u = await User.findById(req.user.id).select("bonusBalance");
-  const currentBonus = Math.max(0, Number(u?.bonusBalance || 0));
-  const bonusUsed = Math.min(amount, currentBonus);
-  const realUsed = Math.max(0, amount - bonusUsed);
-  const providerCredit = Math.round((realUsed * sharePct) / 100 * 100) / 100;
-
-  const log = await CallLog.create({
-    userId: req.user.id, providerId, durationSec, amount,
-    bonusUsed, realUsed,
-    providerEarnings: providerCredit, sharePct,
-    autoCutoff: !!autoCutoff,
-  });
-  if (amount > 0) {
-    await User.updateOne(
-      { _id: req.user.id },
-      { $inc: { wallet: -amount, bonusBalance: -bonusUsed } }
-    );
-    await Txn.create({ userId: req.user.id, type: "debit", amount, note: `Call ${durationSec}s${bonusUsed > 0 ? ` (₹${bonusUsed.toFixed(2)} bonus)` : ""}` });
-    if (providerCredit > 0) {
-      await Provider.updateOne({ _id: providerId }, { $inc: { earnings: providerCredit, daily: providerCredit } });
+  // Step 1: In-memory lock to block concurrent requests racing to the DB
+  const lastLockAt = callLogLocks.get(lockKey);
+  if (lastLockAt && (now - lastLockAt) < CALL_LOG_DEDUP_WINDOW_MS) {
+    // A request for this user+provider was processed recently — return the existing log
+    const existing = await CallLog.findOne({
+      userId: req.user.id,
+      providerId,
+      at: { $gte: new Date(now - CALL_LOG_DEDUP_WINDOW_MS) },
+    }).sort({ at: -1 });
+    if (existing) return res.json(existing);
+  }
+  callLogLocks.set(lockKey, now);
+  // Auto-clean old lock entries
+  if (callLogLocks.size > 500) {
+    for (const [k, t] of callLogLocks) {
+      if (now - t > CALL_LOG_DEDUP_WINDOW_MS) callLogLocks.delete(k);
     }
   }
-  res.json(log);
+
+  try {
+    // Step 2: DB-level dedupe check (covers cases where process restarted or scaled)
+    const recent = await CallLog.findOne({
+      userId: req.user.id,
+      providerId,
+      at: { $gte: new Date(now - CALL_LOG_DEDUP_WINDOW_MS) },
+    }).sort({ at: -1 });
+    if (recent) {
+      // Already logged this exact call recently — do not charge again
+      return res.json(recent);
+    }
+
+    const billing = await Settings.findOne({ key: "billing" });
+    const sharePct = Number(billing?.value?.providerSharePct ?? 60);
+    const packages = normalizePackages(billing?.value?.packages);
+
+    // Server is the source of truth for the amount — recompute from tier.
+    const amount = computeCallAmount(Number(durationSec) || 0, packages);
+
+    const u = await User.findById(req.user.id).select("bonusBalance");
+    const currentBonus = Math.max(0, Number(u?.bonusBalance || 0));
+    const bonusUsed = Math.min(amount, currentBonus);
+    const realUsed = Math.max(0, amount - bonusUsed);
+    const providerCredit = Math.round((realUsed * sharePct) / 100 * 100) / 100;
+
+    const log = await CallLog.create({
+      userId: req.user.id, providerId, durationSec, amount,
+      bonusUsed, realUsed,
+      providerEarnings: providerCredit, sharePct,
+      autoCutoff: !!autoCutoff,
+    });
+    if (amount > 0) {
+      await User.updateOne(
+        { _id: req.user.id },
+        { $inc: { wallet: -amount, bonusBalance: -bonusUsed } }
+      );
+      await Txn.create({ userId: req.user.id, type: "debit", amount, note: `Call ${durationSec}s${bonusUsed > 0 ? ` (₹${bonusUsed.toFixed(2)} bonus)` : ""}` });
+      if (providerCredit > 0) {
+        await Provider.updateOne({ _id: providerId }, { $inc: { earnings: providerCredit, daily: providerCredit } });
+      }
+    }
+    res.json(log);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Provider self
@@ -562,6 +604,29 @@ app.post("/api/admin/users", auth("admin"), async (req, res) => {
 app.delete("/api/admin/users/:id", auth("admin"), async (req, res) => {
   await User.deleteOne({ _id: req.params.id });
   res.json({ ok: true });
+});
+app.patch("/api/admin/users/:id", auth("admin"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const patch = {};
+    if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim().slice(0, 60);
+    if (typeof body.mobile === "string" && body.mobile.trim()) {
+      const cleanMobile = String(body.mobile).replace(/\D/g, "").slice(-10);
+      if (cleanMobile.length !== 10) return res.status(400).json({ error: "invalid mobile" });
+      // Ensure mobile uniqueness
+      const dup = await User.findOne({ mobile: cleanMobile, _id: { $ne: req.params.id } });
+      if (dup) return res.status(409).json({ error: "mobile already in use" });
+      patch.mobile = cleanMobile;
+    }
+    if (typeof body.password === "string" && body.password.length > 0) {
+      if (body.password.length < 6) return res.status(400).json({ error: "password must be at least 6 characters" });
+      patch.password = await bcrypt.hash(body.password, 10);
+    }
+    if (Object.keys(patch).length === 0) return res.status(400).json({ error: "nothing to update" });
+    const u = await User.findByIdAndUpdate(req.params.id, patch, { new: true });
+    if (!u) return res.status(404).json({ error: "user not found" });
+    res.json(u);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post("/api/admin/users/:id/adjust", auth("admin"), async (req, res) => {
   const delta = Number(req.body?.delta || 0);
@@ -732,6 +797,7 @@ app.get("/api/admin/payouts", auth("admin"), async (req, res) => {
       providerId: id,
       providerName: pMap[id]?.name || "—",
       providerMobile: pMap[id]?.mobile || "",
+      isDeleted: !pMap[id],
       calls: 0, durationSec: 0, gross: 0, bonusUsed: 0, realUsed: 0, payout: 0, adminShare: 0,
       pendingBalance: 0,
     };
@@ -837,6 +903,24 @@ app.get("/api/admin/payouts/history", auth("admin"), async (req, res) => {
   if (req.query.providerId) q.providerId = String(req.query.providerId);
   const list = await Payout.find(q).sort({ at: -1 }).limit(500);
   res.json(list);
+});
+
+// Admin — clear all payout history + call logs for a (typically deleted) provider.
+// Used when a provider's profile has been deleted and admin wants to wipe their orphaned data.
+app.delete("/api/admin/payouts/clear/:providerId", auth("admin"), async (req, res) => {
+  try {
+    const providerId = String(req.params.providerId || "");
+    if (!providerId) return res.status(400).json({ error: "providerId required" });
+    const payoutResult = await Payout.deleteMany({ providerId });
+    const callResult = await CallLog.deleteMany({ providerId });
+    // Also zero-out any stale earnings on the provider record (if it still exists)
+    await Provider.updateOne({ _id: providerId }, { $set: { earnings: 0, daily: 0 } }).catch(() => {});
+    res.json({
+      ok: true,
+      payoutsDeleted: payoutResult.deletedCount || 0,
+      callLogsDeleted: callResult.deletedCount || 0,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.put("/api/admin/payments/settings", auth("admin"), async (req, res) => {
   const s = await Settings.findOneAndUpdate({ key: "payments" }, { value: req.body }, { upsert: true, new: true });

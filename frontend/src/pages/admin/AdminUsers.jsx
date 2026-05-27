@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../lib/store";
 import { Input } from "../../components/MobileShell";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, Edit, X, Save, Lock, User as UserIcon } from "lucide-react";
 import { inr } from "../../lib/format";
 import { toast } from "sonner";
 
@@ -10,6 +10,8 @@ export default function AdminUsers() {
   const [form, setForm] = useState({ name: "", mobile: "", password: "", wallet: 0 });
   const [adj, setAdj] = useState({});
   const [busy, setBusy] = useState(false);
+  const [editDlg, setEditDlg] = useState(null); // { id, name, mobile, password }
+  const [editBusy, setEditBusy] = useState(false);
 
   const refresh = async () => {
     try { setUsers(await api.adminGetUsers()); } catch (e) { toast.error(e.message); }
@@ -37,6 +39,26 @@ export default function AdminUsers() {
     catch (e) { toast.error(e.message); }
   };
 
+  const openEdit = (u) => setEditDlg({ id: u.id, name: u.name || "", mobile: u.mobile || "", password: "" });
+  const saveEdit = async () => {
+    if (!editDlg) return;
+    const patch = {};
+    if (editDlg.name && editDlg.name.trim()) patch.name = editDlg.name.trim();
+    if (editDlg.mobile && editDlg.mobile.trim()) patch.mobile = editDlg.mobile.trim();
+    if (editDlg.password) {
+      if (editDlg.password.length < 6) return toast.error("Password must be at least 6 characters");
+      patch.password = editDlg.password;
+    }
+    if (Object.keys(patch).length === 0) return toast.error("Change at least one field");
+    setEditBusy(true);
+    try {
+      await api.adminUpdateUser(editDlg.id, patch);
+      toast.success("User updated");
+      setEditDlg(null);
+      await refresh();
+    } catch (e) { toast.error(e.message); } finally { setEditBusy(false); }
+  };
+
   return (
     <div className="space-y-8">
       <header>
@@ -52,13 +74,13 @@ export default function AdminUsers() {
           <Input data-testid="add-user-password" placeholder="Password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
           <Input data-testid="add-user-wallet" placeholder="Wallet" type="number" value={form.wallet} onChange={(e) => setForm({ ...form, wallet: e.target.value })} />
         </div>
-        <button data-testid="add-user-btn" disabled={busy} onClick={add} className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-[#9333EA] text-black font-semibold rounded-xl hover:bg-[#7C3AED] disabled:opacity-50">
+        <button data-testid="add-user-btn" disabled={busy} onClick={add} className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-[#9333EA] text-white font-semibold rounded-xl hover:bg-[#7C3AED] disabled:opacity-50">
           <Plus className="w-4 h-4" /> Add
         </button>
       </section>
 
       <section className="bg-[#151923] border border-white/5 rounded-2xl overflow-x-auto">
-        <table className="w-full text-sm min-w-[640px]">
+        <table className="w-full text-sm min-w-[760px]">
           <thead className="bg-[#0D1119] text-[#94A3B8]">
             <tr>
               <th className="px-4 py-3 text-left font-medium">Name</th>
@@ -77,11 +99,29 @@ export default function AdminUsers() {
                 <td className="px-4 py-3">
                   <div className="flex gap-2">
                     <Input data-testid={`adj-${u.id}`} placeholder="±amount" value={adj[u.id] || ""} onChange={(e) => setAdj({ ...adj, [u.id]: e.target.value })} className="!py-2 max-w-[120px]" />
-                    <button onClick={() => adjust(u.id, adj[u.id])} className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm">Apply</button>
+                    <button data-testid={`adj-apply-${u.id}`} onClick={() => adjust(u.id, adj[u.id])} className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm text-white">Apply</button>
                   </div>
+                  <p className="text-[10px] text-[#64748B] mt-1">Use + or - prefix (e.g. -50)</p>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <button data-testid={`del-user-${u.id}`} onClick={() => remove(u.id)} className="text-[#EF4444] p-2 rounded-lg hover:bg-[#EF4444]/10"><Trash2 className="w-4 h-4" /></button>
+                  <div className="inline-flex gap-2">
+                    <button
+                      data-testid={`edit-user-${u.id}`}
+                      onClick={() => openEdit(u)}
+                      className="text-[#9333EA] p-2 rounded-lg hover:bg-[#9333EA]/10"
+                      title="Edit user"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                    <button
+                      data-testid={`del-user-${u.id}`}
+                      onClick={() => remove(u.id)}
+                      className="text-[#EF4444] p-2 rounded-lg hover:bg-[#EF4444]/10"
+                      title="Delete user"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -89,6 +129,74 @@ export default function AdminUsers() {
           </tbody>
         </table>
       </section>
+
+      {/* Edit User dialog */}
+      {editDlg && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4" data-testid="edit-user-dlg">
+          <div className="w-full max-w-md bg-[#0F141C] border border-white/10 rounded-2xl p-6 shadow-2xl">
+            <div className="flex items-start justify-between mb-5">
+              <div>
+                <p className="text-[11px] uppercase tracking-wider text-[#9333EA] font-semibold">Edit user</p>
+                <h3 className="font-heading text-xl font-bold mt-1">Update profile</h3>
+              </div>
+              <button onClick={() => setEditDlg(null)} className="p-1.5 -mr-2 -mt-1 rounded-lg hover:bg-white/5 text-[#94A3B8]">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-[#94A3B8] font-semibold mb-1.5 block flex items-center gap-1.5">
+                  <UserIcon className="w-3 h-3" /> Name
+                </label>
+                <Input
+                  data-testid="edit-user-name"
+                  value={editDlg.name}
+                  onChange={(e) => setEditDlg({ ...editDlg, name: e.target.value })}
+                  placeholder="Full name"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-[#94A3B8] font-semibold mb-1.5 block">Mobile</label>
+                <Input
+                  data-testid="edit-user-mobile"
+                  value={editDlg.mobile}
+                  onChange={(e) => setEditDlg({ ...editDlg, mobile: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                  placeholder="10-digit mobile"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-[#94A3B8] font-semibold mb-1.5 block flex items-center gap-1.5">
+                  <Lock className="w-3 h-3" /> New Password (optional)
+                </label>
+                <Input
+                  data-testid="edit-user-password"
+                  type="text"
+                  value={editDlg.password}
+                  onChange={(e) => setEditDlg({ ...editDlg, password: e.target.value })}
+                  placeholder="Leave blank to keep current"
+                />
+                <p className="text-[10px] text-[#64748B] mt-1">Min 6 characters. Only filled if you want to reset it.</p>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setEditDlg(null)}
+                  className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-[#94A3B8] text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  data-testid="edit-user-save"
+                  onClick={saveEdit}
+                  disabled={editBusy}
+                  className="flex-1 py-2.5 rounded-xl bg-[#9333EA] hover:bg-[#7C3AED] text-white text-sm font-bold disabled:opacity-50 inline-flex items-center justify-center gap-2"
+                >
+                  <Save className="w-4 h-4" /> Save changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
