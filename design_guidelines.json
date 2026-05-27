@@ -1,0 +1,105 @@
+{
+  "theme": "dark",
+  "archetype": "Archetype 5: Jewel & Luxury",
+  "design_philosophy": "Mobile-first PWA focusing on premium trust and deep contrast. Utilizing deep obsidian backgrounds with warm amber accents to evoke a high-end, reliable consultation service in the Indian market. Heavy use of glassmorphism for overlays and native-feeling gesture interactions. Rejects cheap/generic consultation visuals in favor of a private concierge feel.",
+  "colors": {
+    "background": "#0A0D14",
+    "surface": "#151923",
+    "surface_elevated": "#1E2433",
+    "primary": "#F59E0B",
+    "primary_foreground": "#000000",
+    "secondary": "#272E3F",
+    "secondary_foreground": "#FFFFFF",
+    "accent": "#F59E0B",
+    "success": "#10B981",
+    "error": "#EF4444",
+    "text_primary": "#F8FAFC",
+    "text_secondary": "#94A3B8",
+    "border": "#1E2433"
+  },
+  "typography": {
+    "font_family_heading": "'Outfit', sans-serif",
+    "font_family_body": "'Plus Jakarta Sans', sans-serif",
+    "h1": "text-4xl tracking-tight font-bold text-[#F8FAFC]",
+    "h2": "text-2xl tracking-tight font-semibold text-[#F8FAFC]",
+    "h3": "text-xl font-medium text-[#F8FAFC]",
+    "body": "text-base leading-relaxed text-[#94A3B8]",
+    "small": "text-sm text-[#94A3B8]",
+    "label": "text-xs tracking-[0.05em] uppercase text-[#94A3B8] font-medium"
+  },
+  "spacing_and_layout": {
+    "mobile_container": "max-w-md mx-auto w-full min-h-screen bg-[#0A0D14] relative overflow-hidden shadow-2xl shadow-black/50 border-x border-white/5",
+    "admin_container": "w-full min-h-screen bg-[#0A0D14] grid grid-cols-1 md:grid-cols-[250px_1fr]",
+    "padding_standard": "p-6",
+    "gap_standard": "gap-4",
+    "border_radius": "rounded-2xl",
+    "bento_grid": "grid grid-cols-2 gap-4"
+  },
+  "components": {
+    "bottom_sheet": "fixed bottom-0 left-0 right-0 w-full max-w-md mx-auto bg-[#151923] rounded-t-3xl border-t border-white/10 p-6 shadow-[0_-12px_40px_rgba(0,0,0,0.6)] z-50",
+    "glass_header": "sticky top-0 z-40 w-full backdrop-blur-xl bg-[#0A0D14]/80 px-6 py-4 flex justify-between items-center border-b border-white/5",
+    "card": "bg-[#151923] rounded-2xl border border-white/5 p-5 flex flex-col gap-3 relative overflow-hidden",
+    "provider_card": "flex gap-4 p-4 bg-[#151923] rounded-2xl border border-white/5 items-center hover:bg-[#1A1F2B] transition-colors",
+    "primary_button": "w-full bg-[#F59E0B] hover:bg-[#D97706] text-black font-semibold py-4 rounded-xl flex justify-center items-center transition-transform active:scale-[0.98] shadow-[0_4px_14px_rgba(245,158,11,0.2)]",
+    "secondary_button": "w-full bg-[#272E3F] hover:bg-[#333C52] text-white font-medium py-4 rounded-xl flex justify-center items-center transition-transform active:scale-[0.98]",
+    "danger_button": "w-full bg-[#EF4444]/10 hover:bg-[#EF4444]/20 text-[#EF4444] border border-[#EF4444]/30 font-medium py-4 rounded-xl flex justify-center items-center transition-all",
+    "video_call_overlay": "absolute bottom-8 left-6 right-6 backdrop-blur-2xl bg-[#0A0D14]/70 border border-white/10 rounded-3xl p-6 flex flex-col gap-4 shadow-2xl",
+    "status_badge_online": "bg-[#10B981]/10 text-[#10B981] text-xs font-semibold px-2.5 py-1 rounded-full border border-[#10B981]/20 flex items-center gap-1.5 shadow-[0_0_10px_rgba(16,185,129,0.1)]",
+    "status_badge_offline": "bg-white/5 text-[#94A3B8] text-xs font-medium px-2.5 py-1 rounded-full border border-white/10 flex items-center gap-1.5",
+    "amount_text": "font-['Outfit'] font-bold text-2xl text-[#F59E0B]",
+    "input_field": "w-full bg-[#0A0D14] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#F59E0B] focus:ring-1 focus:ring-[#F59E0B]/50 transition-all",
+    "admin_table": "w-full text-left text-sm text-[#94A3B8] border-collapse",
+    "admin_th": "px-4 py-3 bg-[#151923] font-medium text-white border-b border-white/10",
+    "admin_td": "px-4 py-4 border-b border-white/5 bg-[#0A0D14]"
+  },
+  "visual_effects": {
+    "glassmorphism": "backdrop-blur-xl bg-white/5 border border-white/10",
+    "shadows_ambient": "shadow-[0_8px_32px_rgba(0,0,0,0.4)]",
+    "shadows_glow": "shadow-[0_0_15px_rgba(245,158,11,0.15)]"
+  },
+  "icons_library": "lucide-react",
+  "media_urls": {
+    "backgrounds": [
+      {
+        "url": "https://static.prod-images.emergentagent.com/jobs/6761f194-5fee-4f19-9171-274a2b622957/images/774ade638e3822a68a723cd61f41836776bfb05d4430e4cc743763ad6877b852.png",
+        "description": "Premium dark abstract background for Login, Wallet, and Hero sections",
+        "category": "background"
+      }
+    ],
+    "avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1598411435746-47bfecc3ea98?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHwxfHxpbmRpYW4lMjBwcm9mZXNzaW9uYWwlMjBwb3J0cmFpdHxlbnwwfHx8fDE3Nzg3NzM1MDV8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Provider Avatar 1 (Male)",
+        "category": "avatar"
+      },
+      {
+        "url": "https://images.pexels.com/photos/7580822/pexels-photo-7580822.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Provider Avatar 2 (Female)",
+        "category": "avatar"
+      },
+      {
+        "url": "https://images.pexels.com/photos/7580940/pexels-photo-7580940.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Provider Avatar 3 (Male, Formal)",
+        "category": "avatar"
+      }
+    ],
+    "payment": [
+      {
+        "url": "https://images.unsplash.com/photo-1550482768-88b710a445fd?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHwxfHxkaWdpdGFsJTIwcXIlMjBjb2RlJTIwc2NhbiUyMGFic3RyYWN0fGVufDB8fHx8MTc3ODc3MzUwNXww&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract QR Code visual for Wallet/UPI Top-up screen",
+        "category": "qr_code"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the dark theme colors provided. DO NOT use generic Vercel/Stripe light themes, purple/teal gradients, or purely white backgrounds.",
+    "The application has two distinct layouts: A mobile-first PWA for users/providers (wrap all mobile routes in a 'max-w-md mx-auto' container to simulate an app on desktop monitors) and a desktop web Admin Panel (full width grid layout).",
+    "For the mobile PWA, use 'fixed bottom-0' for navigation and critical CTAs (like 'Start Video Call' or 'I Paid') to ensure thumb-friendly ergonomics.",
+    "For typography, import 'Outfit' for headings and 'Plus Jakarta Sans' for body text from Google Fonts via CSS or Next.js fonts. Do NOT use Inter or Roboto.",
+    "Use the specific 'glass_header', 'bottom_sheet', and 'video_call_overlay' component guidelines to create depth and a premium concierge feel.",
+    "When displaying currency, format strictly as '₹XX/min' or '₹XXXX' using the Indian Rupee symbol.",
+    "Ensure the video call screen feels immersive by taking up the full viewport height within the mobile container, overlaying the live wallet deduction and end call buttons with glassmorphism.",
+    "Use standard Shadcn UI components for the Admin Panel but customize their borders and backgrounds to match the #0A0D14 base dark theme.",
+    "Always add 'data-testid' to interactive elements (buttons, inputs, links, list items)."
+  ]
+}

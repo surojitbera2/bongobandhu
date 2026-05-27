@@ -1,0 +1,36 @@
+{
+  "summary": "DialPro retest after iter-6 fixes — ran /app/tests/playwright_call_test.py end-to-end across two browser contexts (user + provider). Result: 19/19 PASS. All three regressions targeted this iteration are now resolved: (A) webrtc_offer is actually sent now that startPeer reads providerRef.current instead of stale closure -> provider transitions to phase='connected', pcall-timer ticks (00:06), pcall-earned increments (₹1.8). (B) endCall navigates synchronously to /app and api.addTxn writes the debit (verified: 'Call with Aarav Mehta (00:07) -2.1' in /wallet history; wallet went ₹250 -> ₹245.8). (C) Reject path nav('/app') verified — both manual reject (Scenario 2) and offline auto-reject (Scenario 3) land the user on /app.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/ws/signal", "issue": "Cluster ingress still flaps WS connections every 1-10s (visible as repeated USER WS CLOSED/OPEN cycles in the Playwright frame trace). Outbox correctly bridges this for the call_accept and call_reject hops, but the underlying instability remains. Worth investigating k8s ingress proxy_read_timeout / idle keepalive for production."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/playwright_call_test.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "CallScreen.jsx: providerRef/userRef/walletRef/secondsRef/endedRef pattern correctly eliminates stale-closure bugs in offAccept/offReject/offEnd/endCall. Verified via Playwright WS trace: USER WS SENT webrtc_offer now appears immediately after PROV WS SENT call_accept.",
+    "CallScreen.jsx endCall L165-181: synchronous nav() (no setTimeout) and endedRef guard make the end path deterministic. api.addTxn is invoked before nav so the wallet debit is persisted to localStorage before the unmount.",
+    "CallScreen.jsx offReject L88-96: nav('/app') is correct — lands user on discovery as expected.",
+    "Signaling outbox (server.py) + signaling.js retry queue continues to mask the WS flap; no regressions observed.",
+    "Minor: there is no fallback timer on the PROVIDER side if webrtc_offer never arrives — pcall-timer still depends on phase='connected' which is set inside the offOffer handler. Not a current bug (offer arrives reliably now) but a production resilience nit."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100% (19/19 e2e steps)"
+  },
+  "test_credentials": "User 9999999999/demo123, Provider 8000000001/pro123 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None — relies on existing localStorage seed (pr1 Aarav Mehta, u1 Demo User, wallet ₹250).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Full happy-path + reject + offline-auto-reject all green at 19/19. If future regressions appear, first inspect Playwright WS frame trace for presence of 'USER WS SENT webrtc_offer' immediately after 'PROV WS SENT call_accept' — that is the canonical signal that the providerRef stale-closure fix is still intact.",
+  "rca of the issue": "All three iter-6 bugs were rooted in stale React closures inside long-lived signaling subscriptions: (A) startPeer captured the initial `provider` state (null at subscribe time) so signaling.send(webrtc_offer, p.id, ...) silently no-op'd because p was null/stale. Fix: read providerRef.current at send time. (B) endCall's setTimeout(nav, 800) raced the setEnded/setPhase unmount cycle which tore down the timer before nav fired. Fix: call nav() synchronously after state mutations and use endedRef to guard re-entry. (C) nav(-1) navigated back to /provider/pr1 (the detail page entered just before /call/pr1) instead of /app. Fix: explicit nav('/app') on reject."
+}

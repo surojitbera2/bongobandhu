@@ -1,0 +1,47 @@
+{
+  "summary": "Cross-CONTEXT (two browser contexts simulating two devices) e2e test of the new FastAPI WebSocket signaling at /api/ws/signal. Backend pytest 6/6 PASSED — /api/health returns {ok:true}, /api/ws/signal accepts connections with ?id=, routes JSON by 'to' field, injects 'from' correctly, supports bidirectional A↔B flow, and closes connections that omit ?id. Frontend cross-context flow FAILS: provider page logs in, toggles online (verified by visible '● Online' text), the user logs in in a SEPARATE context, opens provider pr1 and clicks start-call-btn — Playwright WS instrumentation shows the user's WS opens to wss://.../api/ws/signal?id=u1 and emits the call_request frame to 'to:pr1', but the user's WS then CLOSES, the provider's WS receives NO frame, and the provider page never shows [data-testid=accept-call]. The downstream accept/in-call/end/reject paths are therefore BLOCKED and could not be exercised end-to-end across contexts. Original user complaint ('no ring, no call coming') is REPRODUCED across contexts.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Cross-device call (Context A user → Context B provider) via the new server WebSocket signaling",
+        "issue": "USER context WebSocket to /api/ws/signal?id=u1 opens, sends the call_request frame TWICE (within ~1ms, suggesting React 18 StrictMode double-mount of CallScreen), then CLOSES. Provider's WebSocket (opened earlier on /provider, id=pr1, still attached) receives NO frame from the server for that call_request. Result: provider sees no incoming popup; user is stuck on RINGING. Hypotheses for root cause: (a) React.StrictMode in dev re-mounts CallScreen — first mount’s cleanup tears down state and may race with the send; (b) signaling.connect() doesn't re-bind listeners cleanly across StrictMode mount/unmount and the second connect call doesn't re-open the socket while the in-flight send is on a half-open WS; (c) the WS readyState transitioned to closed before the server flushed the frame because of an upstream/ingress idle close or because CallScreen unmount/remount in StrictMode triggered ws.onerror; (d) the backend auto-reload during testing replaced the in-memory peers dict and the user WS connected before the provider's reconnect completed.",
+        "affected_selectors": ["[data-testid=\"start-call-btn\"]", "[data-testid=\"accept-call\"]", "[data-testid=\"reject-call\"]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_signaling.py",
+    "/app/test_reports/pytest/signaling_results.xml"
+  ],
+  "action_items": [
+    "Investigate why the user-side WebSocket closes immediately after sending the call_request frame. Concrete debugging: open DevTools Network → WS on the user tab during a real call attempt and inspect the close code/reason. Add a console.log in signaling.js ws.onclose with `code` and `reason` and ws.onerror.",
+    "Harden /app/frontend/src/lib/signaling.js against React 18 StrictMode double-mount: (a) keep a single module-level socket and DO NOT re-open in connect() if myId===id and ws.readyState in (0,1); (b) buffer outgoing messages in `queue` if readyState !== 1 (already done) but ALSO retry-send after reconnect — currently the queue is per-WS and is flushed only on onopen of THE FIRST WS, never on reconnect (line 18-21 flushes queue on the NEW socket — verify that path actually fires for the call_request that was enqueued before close).",
+    "Make signaling delivery confirm-on-connect: after the user WS connects, the user side should re-emit `call_request` if no `call_accept`/`call_reject` is observed within ~2s (lightweight retry). This single change would have masked the underlying race in our run.",
+    "On the backend, consider an ACK pattern: after routing a message to `target`, send {type:'ack', id:msg.id} back to the sender so the frontend can tell when a frame was actually delivered vs swallowed by a half-open peer socket.",
+    "On the backend, the `existing.close()` for duplicate id (server.py L51-53) is correct but combined with StrictMode could cause a flapping reconnect from the user side. Add a 200-300ms grace period before forcibly closing the existing socket, or key peers by (id, connection-uuid) and address by id with broadcast-to-all-sockets-for-id.",
+    "Confirm React.StrictMode is intentional in /app/frontend/src/index.js for production. If yes, the signaling client MUST be StrictMode-safe (idempotent connect, no double-send). The fact we see TWO identical call_request frames in the WS log is the smoking gun for StrictMode interaction.",
+    "Re-run the cross-context Playwright flow after the signaling client is hardened. The pytest suite at /app/backend/tests/test_signaling.py already covers backend routing and should be added to CI."
+  ],
+  "critical_code_review_comments": [
+    "server.py L56 calls `logger.info(...)` but `logger` is assigned at module scope only at L94 — works only because the function is invoked AFTER module load; still, it's bad style. Move `logger = logging.getLogger(__name__)` and basicConfig() above the route handlers.",
+    "server.py: the in-memory `peers` dict has zero TTL and zero auth — fine for an MVP, but any user can spoof a peer_id and intercept messages. Add a token check (HMAC over peerId + secret) when accepting WS.",
+    "server.py: `target.send_text(...)` is wrapped in try/except pass — if the target socket is dead, the sender gets NO feedback. Echo back an error frame so the UI can retry or show 'Provider unreachable'.",
+    "signaling.js: `ws.onclose` reconnects in 1.5s but the in-flight `queue` is owned by the closure — if `open()` recreates `ws`, the previous `queue` is still the module variable so the flush on onopen works; however, mixing `let queue = []` reassignment on disconnect() with closure-captured `ws.send(queue.shift())` is brittle. Refactor to a class.",
+    "signaling.js: there is no heartbeat. K8s ingress will close idle WS after ~60s. Add ping every 25s.",
+    "CallScreen.jsx and ProviderCallScreen.jsx call `signaling.connect()` inside useEffect with cleanup that does NOT disconnect — good — but they also never explicitly handle the case where the WS isn't yet open when `send('call_request', ...)` fires. Add an `onReady` promise to signaling and `await signaling.ready()` before the first send.",
+    "ProviderHome.jsx replies with `call_reject` when offline (L25-26) — correct — but if the user-side WS has already closed by the time the reject is routed, the user is stuck on RINGING forever. Add a 30s client-side timeout on CallScreen that auto-aborts with 'Provider unavailable'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_signaling.py (NEW — 6 pytest cases covering health + WS routing)"
+  ],
+  "success_rate": {"backend": "100% (6/6 pytest)", "frontend": "~35% — login (user+provider), online toggle, ringing UI, WS connect all verified; cross-context call_request delivery, accept/reject/in-call/timers/wallet/earnings settlement BLOCKED by the WS close described above"},
+  "test_credentials": "User 9999999999/demo123 ✓, Provider 8000000001/pro123 ✓",
+  "seed_data_creation": "None — using the localStorage seed (pr1 Aarav Mehta, u1 Demo User, wallet ₹250).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Use two browser CONTEXTS (not tabs) with permissions=['camera','microphone'] and viewport 414x896. Login routes: /provider/login and /login. Form testids: login-mobile, login-password, login-submit. Provider has data-testid online-toggle and the 'online' state is conveyed only by visible text '● Online' — there is no aria-checked, so detect by reading body.innerText. Provider cards are data-testid=provider-card-pr1..pr6. Always page.evaluate(\"document.getElementById('emergent-badge')?.remove()\") on both pages before clicking accept-call / reject-call / call-end (badge interception is real on 414x896). To see WHY the user WS closes, attach page.on('websocket', ws => ws.on('close', ...)) on the user page and log code/reason. The backend pytest at /app/backend/tests/test_signaling.py PASSES 6/6 against the public URL and proves the server-side routing is correct — the bug is on the frontend (signaling client + React StrictMode interaction).",
+  "rca of the issue": "Backend signaling is correct (proven by pytest: peerA→peerB routing with from-injection works in both directions). Frontend reproduces the user complaint: when CallScreen mounts, it calls signaling.connect(u.id) and then signaling.send('call_request', p.id, ...). Playwright WebSocket instrumentation shows the call_request frame is emitted TWICE in <2ms (telltale React 18 StrictMode double-mount) and the WS then closes before any response can be routed back. Because no one else (across contexts) holds that socket open, the message is effectively lost: the provider WS receives nothing and the user stays on RINGING. Fix path: (1) make signaling.js StrictMode-safe and idempotent (single WS, queue retained across reconnect, await-ready before first send); (2) consider removing StrictMode for the call screens, or moving signaling.connect() outside React's effect into a module-level singleton that does not double-mount; (3) add backend-side ack frames so the UI can detect undelivered messages and retry."
+}

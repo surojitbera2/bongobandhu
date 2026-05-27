@@ -1,0 +1,38 @@
+{
+  "summary": "Frontend-only Playwright e2e of the new real-WebRTC + BroadcastChannel cross-tab signaling at 414x896 mobile viewport with two pages of the SAME browser context. Verified: PWA manifest.json + icon.svg served (200), provider+user login, provider online toggle, call_request signaling cross-tab (provider receives incoming-call popup with caller name and Accept/Reject), user side shows 'RINGING...'. BLOCKED on the Accept path because the global Emergent badge anchor (#emergent-badge) intercepts pointer events on the [data-testid=accept-call] and [data-testid=reject-call] buttons of the incoming-call bottom sheet. As a result the downstream flow (WebRTC offer/answer, /provider/call/:userId nav, pcall-timer/pcall-earned, call-timer/call-wallet tick, call-end overlay, post-call wallet debit & provider earnings) and the reject path could not be exercised end-to-end.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ProviderHome.jsx incoming-call bottom sheet", "issue": "Global anchor <a id=\"emergent-badge\"> (the 'Made with Emergent' badge) overlaps and intercepts pointer events on the Accept and Reject buttons of the incoming-call popup. Playwright reports: '<a id=\"emergent-badge\"> intercepts pointer events' and retries 46+ times before timing out. Real users on 414x896 cannot tap Accept/Reject reliably. The popup is z-50 but uses items-end (sits at bottom), where the badge is fixed.", "selector": "[data-testid=\"accept-call\"], [data-testid=\"reject-call\"]", "priority": "CRITICAL"},
+      {"component": "CallScreen.jsx end-call button", "issue": "Similar risk: the call-end button is at bottom-center on the user call screen (see screenshot) and likely competes with the same emergent-badge in the same region — the badge was visible bottom-right in the screenshot of the live call screen. Recommend auditing all bottom-aligned interactive controls.", "selector": "[data-testid=\"call-end\"]", "priority": "HIGH"}
+    ],
+    "integration_issues": [
+      {"flow": "WebRTC accept → /provider/call/:userId → both peers render local PiP + remote main video, timers tick, wallet debits, earnings increase, call-end overlay, post-call ledger update", "issue": "Could not be verified end-to-end because Accept click is intercepted by emergent-badge. Once the click overlay is fixed, retest the full chain. BroadcastChannel signaling itself is confirmed working (provider received call_request from user across two tabs of same context).", "affected_selectors": ["[data-testid=\"accept-call\"]", "[data-testid=\"pcall-timer\"]", "[data-testid=\"pcall-earned\"]", "[data-testid=\"call-timer\"]", "[data-testid=\"call-wallet\"]", "[data-testid=\"call-end\"]"]},
+      {"flow": "Reject path", "issue": "Same emergent-badge interception blocks [data-testid=\"reject-call\"]; could not validate 'Call rejected' toast on user side.", "affected_selectors": ["[data-testid=\"reject-call\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "Incoming-call bottom sheet (ProviderHome)", "issues": ["Buttons sit in the exact vertical strip occupied by the Made-with-Emergent badge — raise the sheet, add bottom safe-area padding, or set pointer-events: none on the badge / increase z-index of the sheet container to be > badge."]},
+      {"screen": "CallScreen.jsx (user side)", "issues": ["Call-end red button overlaps visually with the Emergent badge in the bottom-right (see screenshot). Consider moving the badge or the action row above the badge area on mobile."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Fix overlay: raise the incoming-call popup z-index above #emergent-badge OR add `pointer-events:none` to the badge OR move the Accept/Reject row up with extra bottom padding (e.g., pb-20). Same treatment for CallScreen .call-end area.",
+    "After overlay fix, re-run the full WebRTC accept→in-call→end and reject flows; assert video elements get a srcObject (allow ~3s for ICE) and that pcall-timer/pcall-earned/call-timer/call-wallet tick once per second.",
+    "Confirm that provider 8000000001 (Aarav Mehta?) is indeed the same id used for the testid suffix `provider-card-8000000001` — the test fell back to first card; ensure provider list testids encode the canonical id."
+  ],
+  "critical_code_review_comments": [
+    "ProviderHome.jsx useEffect subscribes to signaling but does NOT re-subscribe if `me.online` changes — currently it reads via api.getProvider(session.id) inside the handler which is fine, but be aware that `signaling.connect(session.id)` only runs once.",
+    "signaling.js BroadcastChannel routing: `if (msg.to && myId && msg.to !== myId) return;` — if a sender omits `to`, message is broadcast to everyone; acceptable for ICE fan-out but ensure `call_request` always includes `to`.",
+    "Incoming-call modal uses `items-end` with `z-50`; ensure it is above any fixed third-party badge. Consider z-[100] and `mb-20`.",
+    "No teardown of WebRTC peerConnection / getUserMedia tracks on unmount or call-end is verifiable here; please confirm tracks.stop() and pc.close() in both CallScreen.jsx and ProviderCallScreen.jsx to avoid camera-light staying on after end."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "~50% (PWA assets, login both sides, online toggle, call_request signaling, ringing/incoming popup verified; accept/reject + in-call timers + video + wallet/earnings settlement BLOCKED by overlay)"},
+  "test_credentials": "User 9999999999/demo123 ✓, Provider 8000000001/pro123 ✓ (login worked for both).",
+  "seed_data_creation": "None.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Use two pages from the SAME Playwright browser context (ctx.new_page()) — BroadcastChannel will not cross contexts. Grant ['camera','microphone'] on the context before any navigation. Viewport 414x896. The critical blocker is #emergent-badge intercepting [data-testid=accept-call]/[data-testid=reject-call]; as a workaround for testing only you can do `await page.click(sel, force=True)` or `await page.evaluate(\"document.getElementById('emergent-badge')?.remove()\")` on the provider page before clicking. After the main agent fixes z-index/padding, re-run the full chain and additionally assert: (1) both pages' <video> elements have srcObject after ~3s, (2) call-timer/pcall-timer advance, (3) wallet decreases & earnings increase per second, (4) call-end overlay appears on both tabs, (5) /wallet shows a debit txn, /provider/earnings shows the credit.",
+  "rca of the issue": "Root cause: The fixed Emergent-branding anchor (<a id=\"emergent-badge\">) is rendered at a higher effective stacking position than the incoming-call bottom-sheet (z-50, items-end). On 414x896 the badge sits exactly over the Accept/Reject row, so Playwright (and likely real fingers) hit the badge instead. Reproduction: login provider, toggle online; in second tab login user, click any online provider card, click start-call-btn; observe the incoming-call popup on provider tab; attempt to click [data-testid=\"accept-call\"]. Mitigation: bump popup container to z-[100] and add bottom padding (pb-20 / safe-area-inset-bottom) so buttons clear the badge; or apply `pointer-events:none` to #emergent-badge in CSS for in-app screens."
+}

@@ -1,0 +1,33 @@
+{
+  "summary": "Iter-8 testing PASS 39/39. New /app/tests/playwright_call_test_v8.py extends the iter-7 suite with: (a) provider-side REMOTE video srcObject check (the previously failing direction — now PASS with videoTracks=1 on a full-screen 369152px area video, confirming always-mounted <video> fixed the ontrack-before-ref race); (b) auto-hide controls check after 6s post-accept (computed opacity===0, opacity-0 + pointer-events-none classes present, 'Tap screen to show controls' hint visible) on BOTH user & provider; (c) tap-to-show re-shows controls (opacity===1, classes removed) via page.mouse.click(200,300) outside the bottom-24 panel; (d) static code-presence checks for ringtone.js / notify.js imports + ringtone.start()/stop() + notify.show() guarded by document.hidden + notify.requestPermission() on online toggle. Baseline scenarios (happy path with timers, wallet debit, earnings; manual reject; offline auto-reject) all still PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/playwright_call_test_v8.py",
+    "/app/tests/playwright_call_test.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Always-mounted <video> with opacity toggle (instead of conditional render) is the correct fix for the ontrack-before-ref race — verified empirically: both directions now carry srcObject with videoTracks>0 within 6s. Good pattern.",
+    "ringtone.js cleanly encapsulates AudioContext lifecycle (lazy init, idempotent start, suspend on stop). Indian double-ring pattern is appropriate for the locale.",
+    "notify.js correctly gates on permission state and degrades to null when unavailable. Real backgrounded push needs a Service Worker + VAPID — comment in the file already calls this out for Node deployment phase. Good.",
+    "ProviderCallScreen.setPhase('connected') is now inside the try-block AFTER setLocalDescription(answer)+signaling.send succeed — prevents false 'connected' state if answer creation fails.",
+    "Minor (pre-existing, not in iter-8 scope): provider earnings are NOT persisted via api.updateProvider/api.saveCallLog inside ProviderCallScreen.endCall — only the user side writes the call log + wallet debit. /provider/earnings still shows ₹0 / 0 calls after a successful call. Worth a follow-up.",
+    "Minor: ProviderHome useEffect cleanup calls ringtone.stop() on unmount but does NOT clear `incoming` state if the user disconnects/rejects via timeout — if a ghost call_request arrives the modal could re-appear after stop. Edge case; low risk.",
+    "Tap-to-show: the outer onClick={tapScreen} is set on the full-screen container and child handlers stopPropagation — clean. Local PiP (top-right) doesn't stopPropagation, so tapping the PiP also reveals controls — desirable UX."
+  ],
+  "updated_files": [
+    "/app/tests/playwright_call_test_v8.py (NEW — extends baseline)"
+  ],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "100% (39/39 e2e + static-code steps)"},
+  "test_credentials": "User 9999999999/demo123, Provider 8000000001/pro123 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None — uses existing localStorage seed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Use /app/tests/playwright_call_test_v8.py as the new baseline (39 assertions). The key new selectors/assertions for iter-8: (1) check_remote_srcobject() picks the LARGEST <video> on the page (full-screen remote) instead of any video, so the local PiP can never give a false positive. (2) check_controls_hidden() finds the bottom-24 backdrop-blur-2xl panel and reads computed opacity. (3) Tap re-show is triggered by page.mouse.click(200,300) — coordinates that are above the bottom-24 controls panel on a 414x896 viewport. If the controls panel positioning changes in future iterations, update the y-coordinate accordingly. Earnings on provider side still show ₹0 (call log not persisted on provider) — leave as pre-existing nit unless explicitly fixed.",
+  "rca of the issue": "Iter-7 provider-side remote video bug RCA confirmed fixed: before iter-8 the remote <video> was conditionally rendered ({connected && <video>...}); the React render happened AFTER pc.ontrack fired in fast-ICE scenarios, so remoteVideo.current was null at ontrack-time and the stream was dropped. Iter-8 fix: render the <video> unconditionally and animate its opacity via class — the ref is always populated, so ontrack can always set srcObject. Verified by Playwright reading the largest <video>.srcObject.getVideoTracks().length === 1 on the PROVIDER page (the previously-broken direction)."
+}

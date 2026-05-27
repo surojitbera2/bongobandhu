@@ -1,0 +1,61 @@
+{
+  "summary": "Cross-context call e2e RE-TESTED after the claimed hardening. Backend signaling looks correct (echoes __ping__ as __pong__, replaces existing socket per id, never broadcasts heartbeat). Frontend StrictMode has been removed in /app/frontend/src/index.js (good). signaling.js now exposes ready() + queue + 25s heartbeat (good). However, the CallScreen integration is INCOMPLETE: the promised retry-every-2.5s + 30s-timeout + await-signaling.ready() were NEVER actually implemented in CallScreen.jsx. The file references `retryTimer` and `timeoutTimer` in clearInterval/clearTimeout calls (lines 60, 61, 66, 67, 88, 89) but those variables are NEVER declared or assigned anywhere. There is also no `await signaling.ready()` and no setInterval/setTimeout that would create them. As a result, the cross-context call still fails identically to iter 3: USER WS opens to ?id=u1, sends one call_request frame, the PROVIDER WS closes at the same instant, the provider never receives the frame, and the provider page never shows accept-call. All downstream paths (accept/in-call/ICE/timer/wallet/earnings, reject, 30s-offline-timeout) are BLOCKED.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "CallScreen.jsx",
+        "issue": "References undefined identifiers `retryTimer` and `timeoutTimer` in cleanup paths (lines 60-89). At runtime, if call_accept / call_reject / call_end ever fires, the handler will throw ReferenceError. Today this is masked only because those events never arrive (call_request is lost on the wire).",
+        "selector": "n/a (source bug)",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Cross-context call_request delivery (user u1 → provider pr1)",
+        "issue": "User WS opens to /api/ws/signal?id=u1 and sends call_request {to:pr1, fromName, rate} ONCE. Within ~50ms the provider's existing WS (id=pr1) closes server-side, so the routed message is dropped (server.py L74-78 try/except pass swallows the failed send_text). The provider's signaling.js auto-reconnects ~1.2s later but the call_request was a one-shot — there is no client-side retry. Provider page shows no incoming popup, [data-testid=accept-call] never appears. Same root behaviour as iter 3 but now without StrictMode double-mount; the underlying WS-routing race is still real.",
+        "affected_selectors": ["[data-testid=\"start-call-btn\"]", "[data-testid=\"accept-call\"]", "[data-testid=\"reject-call\"]", "[data-testid=\"call-end\"]"]
+      },
+      {
+        "flow": "Promised CallScreen hardening (retry 2.5s + 30s timeout + await ready)",
+        "issue": "Not implemented. The review-request states 'CallScreen.jsx (await signaling.ready() then ring; retry every 2.5s while ringing; 30s timeout)' but the file contains NO `await signaling.ready()`, NO setInterval for retry, NO setTimeout for timeout. Only clearInterval(retryTimer)/clearTimeout(timeoutTimer) calls referencing undeclared identifiers exist. This is the single biggest gap blocking the retest.",
+        "affected_selectors": ["n/a"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/playwright_call_test.py",
+    "/app/backend/tests/test_signaling.py",
+    "/app/test_reports/pytest/signaling_results.xml"
+  ],
+  "action_items": [
+    "Implement retry + timeout in /app/frontend/src/pages/CallScreen.jsx (this was promised but missing). Inside the useEffect, after `await signaling.ready()` and the first `signaling.send('call_request', p.id, {...})`, do: `const retryTimer = setInterval(() => { if (phase === 'ringing') signaling.send('call_request', p.id, {fromName: u.name, rate: p.rate}); }, 2500);` and `const timeoutTimer = setTimeout(() => { toast.error(\"Provider didn't answer\"); cleanup(); setTimeout(() => nav('/app'), 600); }, 30000);` — then return their cleanup from the effect (clearInterval/clearTimeout). The clear* calls already in the code (lines 60,61,66,67,88,89) currently reference undeclared variables and will throw ReferenceError once call_accept/call_reject/call_end actually fires.",
+    "Wrap the initial ring in `await signaling.ready()` so the user-side WS is guaranteed OPEN before the first frame goes out: `signaling.connect(u.id); await signaling.ready(); signaling.send('call_request', ...);` This is the second half of the promised fix and is also missing.",
+    "On the backend, consider keeping a small bounded outbox per peer_id (e.g., last 5 messages with TTL 5s). When a peer's socket dies and reconnects within TTL, flush the outbox so transient-close races (the exact symptom we keep observing) don't drop call_request. Combined with client retry, this would make signaling delivery robust.",
+    "Optional: emit an ACK frame ({type:'ack', for:'call_request'}) from the server only when target.send_text succeeded, so the caller UI can show 'connecting…' vs 'unreachable' deterministically rather than relying on a blind 30s timeout.",
+    "After implementing the above, re-run /app/tests/playwright_call_test.py — it already exercises all four scenarios end-to-end (happy path with WebRTC, reject, 30s offline-auto-reject, wallet/earnings settlement)."
+  ],
+  "critical_code_review_comments": [
+    "CallScreen.jsx lines 60-89: `clearInterval(retryTimer)` and `clearTimeout(timeoutTimer)` reference identifiers that are never declared in the file. JavaScript will throw ReferenceError when these run. This is the most important defect.",
+    "CallScreen.jsx line 54: `signaling.send('call_request', p.id, ...)` fires without awaiting `signaling.ready()` even though signaling.js exposes it. Although signaling.js does queue when WS not open, the queue is flushed only by THIS particular socket's onopen — if the WS errors+reconnects before flushing, the queue survives but the timing is still racy. Awaiting ready() is the cleaner contract.",
+    "signaling.js: on disconnect() the readyResolvers list is cleared but pending resolvers are not rejected — any awaiter will hang forever after disconnect(). Reject them on disconnect.",
+    "signaling.js: heartbeat sends `{type:'__ping__'}` with no `to` field. Backend correctly handles it (L65 short-circuit) — good. But heartbeat only runs once a socket has been OPEN; if onopen→ws.close happens before 25s, the interval never starts. Minor.",
+    "server.py L74-78: failed `target.send_text` is silently swallowed. The caller has zero feedback that the routing failed. This is the root reason the WS-close race becomes invisible to the UI. Either log+ack-fail or buffer-on-target-disconnect.",
+    "server.py L49-54: when a duplicate peer_id reconnects, the existing socket is force-closed immediately. Add a tiny grace (200-300ms) or, better, support multi-socket fan-out per id so a flapping reconnect doesn't briefly leave the id with no socket while a sender is mid-send.",
+    "ProviderHome.jsx L21-33: de-dupe by `cur.from === m.from` is good, but the offline auto-reject (`signaling.send('call_reject', m.from, {reason:'offline'})` L28) does not include the reason on the user-side CallScreen — CallScreen's call_reject handler just shows a generic 'Call rejected' toast. The product expectation in the request is 'Provider didn't answer' for the offline path; CallScreen should branch on `reason==='offline'`."
+  ],
+  "updated_files": [
+    "/app/tests/playwright_call_test.py (NEW — two-context e2e covering happy path, reject, offline auto-reject, wallet/earnings)"
+  ],
+  "success_rate": {
+    "backend": "100% (6/6 pytest from iter 3 still passes; no regressions)",
+    "frontend": "~35% — provider/user login, online toggle, start-call-btn click all PASS; provider_incoming_popup FAILS; all downstream tests (accept, ICE, srcObject, timers, wallet, earnings, reject, offline auto-reject) BLOCKED"
+  },
+  "test_credentials": "User 9999999999/demo123 ✓ ; Provider 8000000001/pro123 ✓ (both verified, /app/memory/test_credentials.md was not present — using credentials from review request)",
+  "seed_data_creation": "None — localStorage seed (pr1 Aarav Mehta, u1 Demo User, wallet ₹250).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Use the test at /app/tests/playwright_call_test.py — it instruments both contexts' WebSockets and prints framesent/framereceived which is what surfaces the race. Run with `python /app/tests/playwright_call_test.py`. The current symptom on the WS trace is: USER WS OPEN id=u1 → USER WS SENT call_request → PROV WS CLOSED → PROV WS OPEN id=pr1 (reconnect, too late). After the main agent actually implements the retry interval in CallScreen.jsx, the third or fourth 2.5s retry should land after PROV WS reopens and the provider should pop the accept-call dialog. The test already removes the emergent-badge before clicking accept/reject/call-end.",
+  "rca of the issue": "Two compounding defects: (1) Backend/infra causes the provider's WS to close transiently at roughly the moment the user's WS opens and sends — likely due to either k8s ingress connection routing or the backend's existing.close() racing with a server hot-reload during the test (server.py was edited as part of this iteration). When that happens, the server's `target.send_text` falls into the silent except-pass at server.py L77 and the call_request is dropped. (2) The frontend, even though signaling.js was hardened with ready()+queue+heartbeat, was supposed to call `await signaling.ready()` and set up a 2.5s retry + 30s timeout in CallScreen.jsx — these are NOT implemented. The file even contains clearInterval/clearTimeout calls on undeclared identifiers (`retryTimer`, `timeoutTimer`), which means the author started the change but never finished it. Without retry on the caller side, a single dropped call_request is fatal. Mitigation: finish implementing the retry+timeout exactly as described in the review request; optionally add a small server-side outbox buffer to survive 1-2s reconnects."
+}

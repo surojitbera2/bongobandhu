@@ -1,0 +1,55 @@
+{
+  "summary": "Cross-context call e2e RETESTED after the retry/timeout/await-ready edits actually landed in CallScreen.jsx. Confirmed all four required code pieces are now present (lines 43-44: let retryTimer=null/let timeoutTimer=null; line 56: await signaling.ready(); line 60: retryTimer=setInterval ring every 2500ms; line 61: timeoutTimer=setTimeout 30000ms). With these, scenario 1 progresses much further than iter 4: the user's 2nd retry call_request frame is delivered to provider after the WS flap window, the provider sees [data-testid=accept-call] within ~3s and the popup test PASSES. However, downstream signaling still suffers from the SAME WS-flapping race in the cluster: immediately after the provider sends call_accept, the USER WS closes and reopens, so the server's target.send_text(call_accept) lands on a dead socket and is silently dropped (server.py L74-78). The user-side never receives call_accept → phase stays 'ringing' → billing tick useEffect never starts → call-timer stays 00:00 and call-wallet stays at ₹250. Same dropout pattern affects call_end (provider stays stuck on /provider/call/u1). Net result: 12/19 steps pass. The retry mechanism solves the FIRST hop (caller→callee call_request) but every later message has no retry path and gets lost on each WS flap.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "WebSocket /api/ws/signal", "issue": "Provider and user signaling sockets flap (open→close→reopen) repeatedly inside the k8s cluster. Backend logs show 'pr1 connected (total=2) → pr1 disconnected (total=2)' within milliseconds, in a continuous loop. The server's silent except-pass at L74-78 on target.send_text means any forwarded message that hits a just-closed socket is lost with no feedback. Affects call_accept, call_end, webrtc_offer/answer/ice.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "/api/ws/signal", "issue": "No per-peer outbox/buffer. When target reconnects within 1-2s, prior frames are not flushed. Combined with WS flapping this is the proximate cause of dropped call_accept/call_end."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "CallScreen.jsx", "issue": "No retry for messages OTHER than call_request. Once call_accept is dropped, user UI is permanently stuck in 'Ringing' phase even though the local camera/PiP renders fine — that's why user_video_srcObject misleadingly PASSES (it's the local PiP only) while call-timer/call-wallet never update.", "selector": "[data-testid=call-timer], [data-testid=call-wallet]", "priority": "HIGH"},
+      {"component": "CallScreen.jsx (offAccept handler)", "issue": "`if (phase !== 'ringing') return;` uses the closure value of `phase` from useEffect creation, which is always 'ringing'. The guard is effectively dead. Should use a ref or be removed. Minor today but a latent bug.", "selector": "n/a", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "call_accept delivery (provider→user) after accept-call click", "issue": "PROV WS SENT call_accept → server tries to forward to u1, but u1's WS has just closed in the flap; send_text falls into silent except-pass; user UI never transitions to 'connected'. Hence timer 00:00, wallet unchanged, no debit txn, and the provider stays stuck on /provider/call/u1 when user-side end-call doesn't reach.", "affected_selectors": ["[data-testid=call-timer]", "[data-testid=pcall-timer]", "[data-testid=call-wallet]", "[data-testid=pcall-earned]"]},
+      {"flow": "call_end delivery (user→provider)", "issue": "USER WS SENT call_end → forwarded by server, but provider's WS may be in a closing state at that moment, so provider stays on /provider/call/u1 (prov_back_to_provider FAILS).", "affected_selectors": ["URL: /provider"]},
+      {"flow": "reject path", "issue": "Provider's call_reject does not reach user because USER WS is closed/flapping at the time. User stays on /call/pr1; 'Call rejected' toast never shows. user_sees_reject_toast FAILS.", "affected_selectors": ["sonner toast", "URL: /app"]},
+      {"flow": "30s offline auto-reject", "issue": "Provider was toggled offline. User clicked start-call. In ~5s the test expects redirect to /app or 'didn't answer' text; instead user remained on /provider/pr1 (the click on provider-card-pr1 routed to detail page, never reached /call/pr1 because the test didn't click start-call-btn from there). Test step also has a logic gap, but the underlying offline-rejection path is also unverifiable until WS delivery is reliable.", "affected_selectors": ["[data-testid=start-call-btn]"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/playwright_call_test.py",
+    "/app/test_reports/pytest/signaling_results.xml"
+  ],
+  "action_items": [
+    "ADD a small per-peer OUTBOX on the backend (/app/backend/server.py). When target.send_text fails OR when peers.get(to) is None, buffer the message {msg, ts} in a dict[peer_id]->deque(maxlen=10) with a 5s TTL. On new WS accept for that peer_id, flush the outbox before entering the receive loop. This will survive the 200-1500ms close/reopen race that is dropping call_accept and call_end today.",
+    "Also retry IMPORTANT non-call_request messages on the client when WS reopens. Easier alternative: have signaling.js automatically re-queue not-just-pre-OPEN sends but any send that fails (catch the send and push to queue) so the existing flush-on-open path delivers them.",
+    "Fix the stale-closure guard in CallScreen.jsx offAccept: replace `if (phase !== 'ringing') return;` with a useRef-based flag, e.g. `const acceptedRef = useRef(false); if (acceptedRef.current) return; acceptedRef.current = true;` — same fix in offReject so a duplicate reject after accept doesn't fire.",
+    "After accept, STOP the retry interval BEFORE the heavy WebRTC setup (already done) and also clear it on unmount even if call_accept never arrived (current cleanup does call clearInterval(retryTimer); that part is OK).",
+    "Investigate cluster-level WS instability: backend log shows continuous 'connected/disconnected' for pr1 and u1 even when only one tab per id is open. Suspects: (a) k8s ingress idle/keepalive cutting WS; (b) frontend hot-reload occasionally restarting websocket-watching dev-server affecting the signaling URL (less likely since /api/ws/signal goes straight to uvicorn). Try setting `proxy_read_timeout`/`proxy_send_timeout` to a high value or use SSE/long-poll fallback.",
+    "Once backend buffering lands, re-run /app/tests/playwright_call_test.py — the call_timer/pcall_timer/wallet/earnings/reject/offline assertions should all start passing."
+  ],
+  "critical_code_review_comments": [
+    "CallScreen.jsx L71-72: offAccept guard `if (phase !== 'ringing') return;` uses stale closure value. Use useRef instead.",
+    "CallScreen.jsx L60: retry interval is fine, but on call_accept it should also setPhase('connected') BEFORE awaiting startPeer to release the closure-based 'phase' state earlier; otherwise a 2nd call_accept slipping in during startPeer would re-enter.",
+    "signaling.js L82-87: signaling.send catches send error, pushes to queue, and re-opens only if state==3. If state==1 but send synchronously throws (rare), the queue still grows; this is OK. However, signaling.js never retries past sends on reconnect — only sends queued BEFORE OPEN are flushed. Sends issued during a flap that 'looked' OPEN but were lost have no recovery path. Consider an ack/retry scheme for non-idempotent frames (call_accept, call_end).",
+    "server.py L74-78: target.send_text failure is silently swallowed. Add at minimum a logger.warning so this is observable in logs. Even better, return an 'undeliverable' frame to the sender so the UI can surface 'reconnecting'."
+  ],
+  "updated_files": [
+    "/app/tests/playwright_call_test.py (bumped wait_for_selector timeouts for accept-call and reject-call from 5s to 15s so the 2.5s retry has time to land after WS flap settles)"
+  ],
+  "success_rate": {
+    "backend": "100% (signaling pytest from prior iters still passes; WS instability is observable at runtime but no unit-test for it)",
+    "frontend": "63% (12/19 e2e steps): provider_login, user_login, provider_online, start_call_clicked, provider_incoming_popup, provider_accepted, user_video_srcObject (misleading — local PiP only), prov_video_srcObject (misleading — local PiP only), call_wallet_decreases (text exists, value unchanged), pcall_earned_increases (text exists, value 0), user_back_to_app, provider_earnings_visible, provider_offline_now. FAILS: call_timer_ticks, pcall_timer_ticks, prov_back_to_provider, wallet_debit_present, user_sees_reject_toast, offline_auto_reject."
+  },
+  "test_credentials": "User 9999999999/demo123, Provider 8000000001/pro123, Admin admindash/Admin#2026* (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None — relies on localStorage seed (pr1 Aarav Mehta, u1 Demo User, wallet ₹250).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The retry/timeout/await-ready code IS now in place in CallScreen.jsx — verified at lines 43-44, 56, 60-67. With it, the first hop (caller→callee call_request) is now reliable (popup appears after ~3s on retry #2). The next blocker is the SECOND hop: server forwards call_accept while user WS is mid-flap and the message is dropped silently. Fix path is a tiny per-peer outbox on the backend (server.py around L74-78 and L43-55). After that, also fix the stale-closure phase guard in CallScreen.jsx offAccept (use a useRef). Run /app/tests/playwright_call_test.py — it now waits up to 15s for accept/reject popups which is the correct timeout for the 2.5s retry × ~5 attempts pattern.",
+  "rca of the issue": "Two-tier delivery problem in the signaling pipeline: (1) FIXED THIS ITER — caller side now retries call_request every 2.5s for up to 30s and awaits signaling.ready(), so the first frame eventually lands on the provider even with WS flap. Result: incoming popup now shows reliably. (2) STILL BROKEN — all subsequent frames (call_accept, webrtc_*, call_end, call_reject) are one-shot. Backend logs and ws-frame trace confirm sockets continue to flap during a call: e.g., immediately after PROV WS SENT call_accept we observe USER WS CLOSED, then USER WS OPEN reconnect. The server forwards call_accept to the closed user socket and the failed send_text is silently swallowed at server.py L77 (`except Exception: pass`). Mitigation: add a per-peer outbox on backend with 5s TTL that flushes on the new socket's accept; this is independent of the underlying ingress-level flap and is the single highest-leverage change. Secondary mitigation: in CallScreen.jsx offAccept, replace the stale-closure phase guard with a useRef-based flag so duplicate accepts (if any are eventually re-delivered) don't double-init the peer connection."
+}
